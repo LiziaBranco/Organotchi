@@ -16,7 +16,7 @@ def get_cmds(dir):
 '''
 
 def main():
-    dir = "mmsegmentation/configs/segformer/2d_ms_org_seg_run4_downscale025"
+    dir = "mmsegmentation/configs/segformer/organoid_segmentation"
     cmds = get_cmds(dir)
     for cmd in cmds:
         print(cmd)
