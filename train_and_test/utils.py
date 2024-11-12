@@ -116,7 +116,7 @@ def plot_metrics_from_csv(csv_file_path, split):
     plt.grid()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig(f'robust_monitoring_organoid_growth/plots/mean_metrics_split_{split}.png')  # Save with split info
+    plt.savefig(f'Training_Results/plots/mean_metrics_split_{split}.png')  # Save with split info
     plt.show()
 
     # Plot Stds as connected lines with markers
@@ -132,6 +132,6 @@ def plot_metrics_from_csv(csv_file_path, split):
     plt.grid()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig(f'robust_monitoring_organoid_growth/plots/std_metrics_split_{split}.png')  # Save with split info
+    plt.savefig(f'Training_Results/plots/std_metrics_split_{split}.png')  # Save with split info
     plt.show()
 

@@ -1,6 +1,6 @@
 # dataset settings
 dataset_type = 'MS2D' # Dataset type, this will be used to define the dataset.
-data_root = 'robust_monitoring_organoid_growth/data/' # Root path of data.
+data_root = 'Training_Results/data/' # Root path of data.
 
 crop_size = (768, 1024) #(height, width)
 resize_scale = (1536, 1024) 

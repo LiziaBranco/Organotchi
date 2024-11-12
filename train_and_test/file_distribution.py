@@ -5,12 +5,12 @@ from PIL import Image  # To convert and save images
 import pandas as pd
 
 # Root directories for images and masks
-images_root_dir = 'data/imgs'  # Replace with the actual root folder for images
-masks_root_dir = 'data/labels'  # Replace with the actual root folder for masks
-output_dir = 'robust_monitoring_organoid_growth/data'  # Replace with the actual output directory for split data
+images_root_dir = 'Training-Data/imgs'  # Replace with the actual root folder for images
+masks_root_dir = 'Training-Data/labels'  # Replace with the actual root folder for masks
+output_dir = 'Training_Results/data'  # Replace with the actual output directory for split data
 
 # Load the CSV file
-csv_file = 'splits.csv'  # Replace with the actual path
+csv_file = 'Organoid-Segmentation/train_and_test/splits.csv'  # Replace with the actual path
 df = pd.read_csv(csv_file)
 
 # Clear existing output directories if they exist

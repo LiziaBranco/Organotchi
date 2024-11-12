@@ -4,7 +4,7 @@ from radiomics import featureextractor # https://pyradiomics.readthedocs.io/en/l
 from PIL import Image
 
 # Set the paths for the TIF masks and the output CSV file
-tif_masks_dir = 'robust_monitoring_organoid_growth/work_dirs/split-0/inference_tif'  # Path to .tif masks
+tif_masks_dir = 'Training_Results/work_dirs/split-0/inference_tif'  # Path to .tif masks
 output_csv = 'shape2D_features.csv'  # Output CSV file to save the results
 
 # Initialize the PyRadiomics feature extractor for 2D shape features

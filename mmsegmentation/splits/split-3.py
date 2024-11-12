@@ -30,9 +30,9 @@ optim_wrapper = dict(
             'head': dict(lr_mult=5.)
         }))
             
-evaluation = dict(outdir='robust_monitoring_organoid_growth/work_dirs/split-3/eval_imgs')
+evaluation = dict(outdir='Training_Results/work_dirs/split-3/eval_imgs')
             
-work_dir='robust_monitoring_organoid_growth/work_dirs/split-3'
+work_dir='Training_Results/work_dirs/split-3'
 
 train_dataloader = dict(
     dataset=dict(

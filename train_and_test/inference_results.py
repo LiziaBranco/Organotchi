@@ -67,8 +67,8 @@ if __name__ == "__main__":
 
     for split in range(0, 5):  # Adjust split range as needed
         ground_truth_path = 'data/labels'  # Folder with original npy masks
-        inference_path = f"robust_monitoring_organoid_growth/work_dirs/split-{split}/inference_npy"  # Folder with new npy masks
+        inference_path = f"Training_Results/work_dirs/split-{split}/inference_npy"  # Folder with new npy masks
         original_images = 'data/imgs'  # Folder with jpg original images
-        output_folder = f"robust_monitoring_organoid_growth/work_dirs/split-{split}/inference_vis"  # Folder to save concatenated images
+        output_folder = f"Training_Results/work_dirs/split-{split}/inference_vis"  # Folder to save concatenated images
 
         process_all_npy_images(ground_truth_path, inference_path, original_images, output_folder)

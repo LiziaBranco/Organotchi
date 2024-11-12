@@ -30,7 +30,7 @@ optim_wrapper = dict(
             'head': dict(lr_mult=5.)
         }))
                     
-work_dir='robust_monitoring_organoid_growth/work_dirs/split-0'
+work_dir='Training_Results/work_dirs/split-0'
 
 train_dataloader = dict(
     dataset=dict(
@@ -47,5 +47,5 @@ test_dataloader_dataloader = dict(
         data_prefix=dict(
             img_path='images/split0_test', seg_map_path='masks/split0_test')))
 
-#load_from = 'robust_monitoring_organoid_growth/work_dirs/split-0/iter_96000.pth'  
+#load_from = 'Training_Results/work_dirs/split-0/iter_96000.pth'  
 #resume = True

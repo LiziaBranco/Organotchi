@@ -61,6 +61,6 @@ def plot_means_stds_across_checkpoints(data_dir, plot_dir, splits=5):
     plt.show()
 
 # Specify the directory where summary CSV files and plots are stored
-data_directory = 'robust_monitoring_organoid_growth/work_dirs'
-plot_directory = 'robust_monitoring_organoid_growth/plots'
+data_directory = 'Training_Results/work_dirs'
+plot_directory = 'Training_Results/plots'
 plot_means_stds_across_checkpoints(data_directory, plot_directory)
