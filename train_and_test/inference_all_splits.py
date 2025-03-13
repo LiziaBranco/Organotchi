@@ -11,16 +11,16 @@ from utils import *
 
 def main():
     checkpoints = {
-        'split0': 'Training_Results/work_dirs/split-0/iter_144000.pth',
-        'split1': 'Training_Results/work_dirs/split-1/iter_128000.pth',
-        'split2': 'Training_Results/work_dirs/split-2/iter_160000.pth',
-        'split3': 'Training_Results/work_dirs/split-3/iter_144000.pth',
-        'split4': 'Training_Results/work_dirs/split-4/iter_112000.pth'
+        'split0': 'Training-Results/work_dirs/split-0/iter_144000.pth',
+        'split1': 'Training-Results/work_dirs/split-1/iter_128000.pth',
+        'split2': 'Training-Results/work_dirs/split-2/iter_160000.pth',
+        'split3': 'Training-Results/work_dirs/split-3/iter_144000.pth',
+        'split4': 'Training-Results/work_dirs/split-4/iter_112000.pth'
     }
 
     for split in range(0,5):  # Loop through splits 0 to 4
-        img_dir = f'Training_Results/data/images/split{split}_test'
-        mask_dir = f'Training_Results/data/masks/split{split}_test'  # Ground truth masks
+        img_dir = f'Training-Results/data/images/split{split}_test'
+        mask_dir = f'Training-Results/data/masks/split{split}_test'  # Ground truth masks
         ckp_dir = os.path.dirname(checkpoints[f'split{split}'])
         outdir_inference = opj(ckp_dir, 'inference_npy')
         outdir_tif = opj(ckp_dir, 'inference_tif')
@@ -29,7 +29,7 @@ def main():
 
         # Load the model config and checkpoint for CPU
         ckp = checkpoints[f'split{split}']
-        cfg = Config.fromfile(f'Training_Results/work_dirs/split-{split}/split-{split}.py')
+        cfg = Config.fromfile(f'Training-Results/work_dirs/split-{split}/split-{split}.py')
         cfg.load_from = ckp
         cfg.model.decode_head.norm_cfg = dict(type='BN', requires_grad=True)
 
@@ -38,7 +38,7 @@ def main():
         model.apply(all_eval_except_dropout)
 
         # Prepare CSV to store the metrics
-        metrics_csv_path = f'Training_Results/work_dirs/split-{split}/split{split}_metrics.csv'
+        metrics_csv_path = f'Training-Results/work_dirs/split-{split}/split{split}_metrics.csv'
         metrics_data = []
 
         # Perform inference and calculate metrics for each image

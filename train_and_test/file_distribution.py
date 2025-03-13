@@ -7,7 +7,7 @@ import pandas as pd
 # Root directories for images and masks
 images_root_dir = 'Training-Data/imgs'  # Replace with the actual root folder for images
 masks_root_dir = 'Training-Data/labels'  # Replace with the actual root folder for masks
-output_dir = 'Training_Results/data'  # Replace with the actual output directory for split data
+output_dir = 'Training-Results/data'  # Replace with the actual output directory for split data
 
 # Load the CSV file
 csv_file = 'Organoid-Segmentation/train_and_test/splits.csv'  # Replace with the actual path

@@ -19,9 +19,9 @@ def main():
 
     # Loop through all splits (0 to 4 for now)
     for split in range(0, 5):  # Adjust split range as needed
-        img_dir = f'Training_Results/data/images/split{split}_test'
-        mask_dir = f'Training_Results/data/masks/split{split}_test'  # Ground truth masks
-        ckp_dir = f'Training_Results/work_dirs/split-{split}'
+        img_dir = f'Training-Results/data/images/split{split}_test'
+        mask_dir = f'Training-Results/data/masks/split{split}_test'  # Ground truth masks
+        ckp_dir = f'Training-Results/work_dirs/split-{split}'
         outdir_inference = os.path.join(ckp_dir, 'inference_npy')
         outdir_tif = os.path.join(ckp_dir, 'inference_tif')
 
