@@ -1,16 +1,16 @@
 import os
 import shutil
 import numpy as np
-from PIL import Image  # To convert and save images
+from PIL import Image
 import pandas as pd
 
 # Root directories for images and masks
-images_root_dir = 'Training-Data/imgs'  # Replace with the actual root folder for images
-masks_root_dir = 'Training-Data/labels'  # Replace with the actual root folder for masks
-output_dir = 'Training-Results/data'  # Replace with the actual output directory for split data
+images_root_dir = 'Training-Data/imgs'
+masks_root_dir = 'Training-Data/labels'
+output_dir = 'Training-Results/data'
 
 # Load the CSV file
-csv_file = 'Organoid-Segmentation/train_and_test/splits.csv'  # Replace with the actual path
+csv_file = 'Organoid-Segmentation/train_and_test/splits.csv'
 df = pd.read_csv(csv_file)
 
 # Clear existing output directories if they exist
@@ -35,7 +35,7 @@ for index, row in df.iterrows():
     elif img_filename.lower().endswith('.tif'):
         # If it's a .tif, convert it to .jpg
         img = Image.open(img_path)
-        img = img.resize(target_size, Image.Resampling.LANCZOS)  # Resize the image to 1024x768
+        img = img.resize(target_size, Image.Resampling.LANCZOS)
         new_img_filename = img_filename.rsplit('.', 1)[0] + '.jpg'
         new_img_path = os.path.join(images_root_dir, new_img_filename)
         img.save(new_img_path, "JPEG")  # Save as JPEG
@@ -87,4 +87,4 @@ for index, row in df.iterrows():
         mask_tif_filename = mask_filename.rsplit('.', 1)[0] + '.tif'  # Change extension to .tiff
         mask_img.save(os.path.join(split_mask_dir, mask_tif_filename), format='TIFF')  # Save as TIFF
 
-print("Output directories have been created, and only listed JPG and converted TIF files, along with their masks, have been copied, resized to 1024x768, and processed.")
+print("Output directories have been created, and only listed JPG and converted TIF files, along with their masks, have been copied, resized, and processed.")
