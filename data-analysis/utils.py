@@ -7,19 +7,14 @@ from mmseg.apis import inference_model, init_model
 import os
 import matplotlib.pyplot as plt
 import pandas as pd
-import cv2
-import tifffile
-from skimage.measure import regionprops, label
-from skimage.morphology import skeletonize
-from skimage import measure, morphology, io
+from skimage import measure, morphology
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from matplotlib import markers
-import seaborn as sns
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
+import cv2
 
 def all_eval_except_dropout(m):
     """Ensure dropout layers stay in evaluation mode."""
@@ -36,6 +31,38 @@ def save_as_tif(npy_array, save_path):
     tif_image = Image.fromarray((npy_array * 255).astype(np.uint8))  # Convert binary mask to uint8
     tif_image.save(save_path)
     
+def filter_and_blackout_low_circularity(mask, pixel_to_micron_x, pixel_to_micron_y, circularity_threshold=0.2):
+    """
+    Filters the mask to keep only the structure with the highest area among those with circularity above the threshold.
+    Structures with circularity lower than the threshold are blacked out.
+    """
+    labeled_mask, num_features = measure.label(mask, connectivity=1, return_num=True)  # Identify white structures
+    properties = measure.regionprops(labeled_mask)  # Get region properties
+
+    filtered_mask = np.zeros_like(mask)  # Start with a black mask
+    max_area = 0  # To track the largest structure's area
+    largest_structure_label = -1  # Label of the largest structure
+    structure_count = 0  # Counter for valid structures
+
+    for prop in properties:
+        area = prop.area * pixel_to_micron_x * pixel_to_micron_y
+        perimeter = prop.perimeter * pixel_to_micron_x
+        diameter = np.sqrt(4 * area / np.pi)
+        circularity = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0
+
+        if circularity > circularity_threshold and diameter > 170:
+            # If this structure is larger than the previously largest one, update
+            if area > max_area:
+                max_area = area
+                largest_structure_label = prop.label
+
+    # Retain the largest valid structure
+    if largest_structure_label != -1:
+        filtered_mask[labeled_mask == largest_structure_label] = 255
+        structure_count = 1  # We are keeping only one structure
+
+    return filtered_mask, structure_count
+
 
 def organoid_segmentation_inference(checkpoint, base_dir, project_dir, days, plates):
     for day in days:
@@ -91,26 +118,133 @@ def organoid_segmentation_inference(checkpoint, base_dir, project_dir, days, pla
                 np.save(opj(outdirs['inference_npy'], f'{img_id}.npy'), pred)
                 Image.fromarray((pred * 255).astype(np.uint8)).save(opj(outdirs['inference_jpg'], f'{img_id}.jpg'))
 
-                # Generate comparison image
-                orig_img = Image.open(img)
-                fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-                ax[0].imshow(orig_img)
-                ax[0].set_title('Original Image')
-                ax[0].axis('off')
-                ax[1].imshow(pred, cmap='gray')
-                ax[1].set_title('Predicted Mask')
-                ax[1].axis('off')
+def apply_erosion(mask, kernel_size=(10, 10), iterations=1):
+    """
+    Apply subtle erosion to the binary mask to refine structures slightly.
+    The kernel_size determines the size of the structuring element, and iterations 
+    control the number of times erosion is applied.
+    """
+    kernel = np.ones(kernel_size, np.uint8)  # Create a square kernel
+    eroded_mask = cv2.erode(mask.astype(np.uint8), kernel, iterations=iterations)
+    return eroded_mask
+
+def apply_dilation(mask, initial_kernel_size=(10, 10), iterations=10, reduction_factor=0.8):
+    """
+    Apply progressive dilation to the binary mask, reducing the kernel size on each iteration.
+    
+    - initial_kernel_size: Starting kernel size (width, height).
+    - iterations: Number of dilation steps.
+    - reduction_factor: Multiplier to decrease kernel size per iteration (e.g., 0.7 reduces it by 30% per step).
+    """
+    dilated_mask = mask.copy()
+
+    kernel_size = np.array(initial_kernel_size)
+
+    for i in range(iterations):
+        # Ensure kernel size does not go below 1x1
+        kernel_size = np.maximum((kernel_size * reduction_factor).astype(int), (1, 1))
+        kernel = np.ones(tuple(kernel_size), np.uint8)
+
+        # Apply dilation with the reduced kernel
+        dilated_mask = cv2.dilate(dilated_mask.astype(np.uint8), kernel, iterations=1)
+
+    return dilated_mask
+
+def fill_black_holes(mask):
+    """
+    Fill black holes (internal gaps) within white structures in a binary mask.
+    This helps restore continuous structures after erosion and dilation.
+    """
+    mask_filled = mask.copy()
+    
+    # Find contours of the white regions
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Fill each contour to remove black holes
+    cv2.drawContours(mask_filled, contours, -1, (255), thickness=cv2.FILLED)
+    
+    return mask_filled
+
+def apply_filtering_to_segmentations(base_dir, project_dir, days, plates, pixel_to_micron_x, pixel_to_micron_y):
+    """
+    Applies high-circularity filtering to the segmentation masks in `inference_jpg/`
+    and saves the filtered masks in:
+    - `inference_filtered/` (JPG images)
+    - `inference_filtered_npy/` (Numpy array masks)
+    - `inference_comparison/` (Comparison images)
+    """
+    for day in days:
+        print(day)
+        for plate in plates:
+            processed_data_dir = opj(base_dir, project_dir, 'processed_data', f'Day {day}', plate)
+            inference_jpg_dir = opj(processed_data_dir, 'inference_jpg')
+            filtered_jpg_dir = opj(processed_data_dir, 'inference_filtered')
+            filtered_npy_dir = opj(processed_data_dir, 'inference_filtered_npy')
+            comparison_dir = opj(processed_data_dir, 'inference_comparison')
+
+            os.makedirs(filtered_jpg_dir, exist_ok=True)
+            os.makedirs(filtered_npy_dir, exist_ok=True)
+            os.makedirs(comparison_dir, exist_ok=True)
+
+            for img_loc in sorted(os.listdir(inference_jpg_dir)):
+                if not img_loc.lower().endswith('.jpg'):
+                    continue  # Skip non-JPG files
                 
-                # Save comparison figure
-                plt.savefig(opj(outdirs['inference_comparison'], f'{img_id}.jpg'), bbox_inches='tight')
+                img_path = opj(inference_jpg_dir, img_loc)
+                img_id = os.path.splitext(img_loc)[0]
+
+                # Load the segmentation mask
+                mask = np.array(Image.open(img_path).convert('L'))  # Convert to grayscale
+                mask = mask > 128  # Binarize (thresholding)
+
+                # Apply subtle erosion to refine the mask
+                eroded_mask = apply_erosion(mask)
+
+                # Apply filtering: remove low-circularity structures
+                filtered_mask, structure_count = filter_and_blackout_low_circularity(eroded_mask, pixel_to_micron_x, pixel_to_micron_y)
+                
+                filtered_mask = apply_dilation(filtered_mask)
+                filtered_mask = fill_black_holes(filtered_mask)
+
+                # Save the filtered mask as JPG
+                Image.fromarray(filtered_mask).save(opj(filtered_jpg_dir, f'{img_id}.jpg'))
+
+                # Save the filtered mask as NPY
+                np.save(opj(filtered_npy_dir, f'{img_id}.npy'), filtered_mask)
+
+                # Load original image for comparison
+                orig_img_path = opj(base_dir, project_dir, 'raw_data', f'Day {day}', plate, f"{img_id}.jpg")
+                orig_img = Image.open(orig_img_path) if os.path.exists(orig_img_path) else None
+
+                # Create a comparison plot
+                fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+
+                if orig_img:
+                    ax[0].imshow(orig_img)
+                    ax[0].set_title('Original Image')
+                else:
+                    ax[0].imshow(mask, cmap='gray')
+                    ax[0].set_title('Original Mask')
+
+                ax[0].axis('off')
+                ax[1].imshow(mask, cmap='gray')
+                ax[1].set_title('Unfiltered Mask')
+                ax[1].axis('off')
+                ax[2].imshow(filtered_mask, cmap='gray')
+                ax[2].set_title('Filtered Mask')
+                ax[2].axis('off')
+
+                # Save the comparison figure
+                plt.savefig(opj(comparison_dir, f'{img_id}.jpg'), bbox_inches='tight')
                 plt.close()
-            
+
+     
 def analyze_organoid_morphology(base_dir, project_dir, days, plates, pixel_to_micron_x, pixel_to_micron_y):
     """Extracts morphological features from organoid masks and saves them to CSV."""
     for day in days:
         batch_processed_path = os.path.join(base_dir, project_dir, 'processed_data', f'Day {day}')
         for plate in plates:
-            inference_npy_path = os.path.join(batch_processed_path, plate, 'inference_npy')
+            inference_npy_path = os.path.join(batch_processed_path, plate, 'inference_filtered_npy')
             metrics_path = os.path.join(batch_processed_path, plate, 'inference_metrics')
             os.makedirs(metrics_path, exist_ok=True)
             
@@ -154,7 +288,7 @@ def plot_pca_for_all_plates(base_dir, project_dir, days, plates):
                 df = pd.read_csv(metrics_csv)
                 df = df[df['Diameter_um'] > 170]  # Keep only values greater than 170
                 df = df[df['Diameter_um'] < 1000]
-                df = df[df['Circularity'] > 0.70]  # Keep only values greater than 170   
+                df = df[df['Circularity'] > 0.40]  # Keep only values greater than 170   
                 
                 df['Plate'] = plate
                 df['Day'] = day

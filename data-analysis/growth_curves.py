@@ -11,8 +11,9 @@ base_dir = '../../../AGMayer/Lizia/Organoid_Segmentation'
 #project_dir = '2025_03_05-Theresa-SmallScale-Trial'
 project_dir = '2025_03_05-Quality-Prediction'
 
-days = [1, 2, 3, 4, 6, 7, 8, 9, 10]
+days = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 plates = ['AB108', 'QB01_1', 'QB01_2', "SB60"]
+plates = ['AB108', 'QB01_1', 'QB01_2']
 
 # Create directory for saving plots
 plot_dir = os.path.join(base_dir, project_dir, 'plots')
@@ -46,7 +47,7 @@ def plot_plate_average_growth(base_dir, project_dir, days, plates):
                 if 'Diameter_um' in df.columns:
                     df = df[df['Diameter_um'] > 170]  # Keep only values greater than 170
                     df = df[df['Diameter_um'] < 1000]
-                    df_filtered = df[df['Circularity'] > 0.70]  # Keep only values greater than 170
+                    df_filtered = df[df['Circularity'] > 0.40]  # Keep only values greater than 170
                     #df_filtered = df_filtered[df_filtered['Diameter_um'] < 500]
                     
                     if not df_filtered.empty:
@@ -141,8 +142,8 @@ def plot_organoid_growth(base_dir, project_dir, days, plate, organoid_indices):
 
 # Example usage: track specific plates and organoids
 plot_plate_average_growth(base_dir, project_dir, days, plates)
-plot_organoid_growth(base_dir, project_dir, days, plate="AB108", organoid_indices=[8, 12, 16, 56])
-plot_organoid_growth(base_dir, project_dir, days, plate="QB01_1", organoid_indices=[8, 12, 16, 56])
-plot_organoid_growth(base_dir, project_dir, days, plate="QB01_2", organoid_indices=[8, 12, 16, 56])
-plot_organoid_growth(base_dir, project_dir, days, plate="SB60", organoid_indices=[8, 12, 16, 56])
+#plot_organoid_growth(base_dir, project_dir, days, plate="AB108", organoid_indices=[8, 12, 16, 56])
+#plot_organoid_growth(base_dir, project_dir, days, plate="QB01_1", organoid_indices=[8, 12, 16, 56])
+#plot_organoid_growth(base_dir, project_dir, days, plate="QB01_2", organoid_indices=[8, 12, 16, 56])
+#plot_organoid_growth(base_dir, project_dir, days, plate="SB60", organoid_indices=[8, 12, 16, 56])
 plot_pca_for_all_plates(base_dir, project_dir, days, plates)
