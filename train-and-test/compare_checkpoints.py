@@ -1,66 +1,96 @@
 import os
+import numpy as np
+from PIL import Image
 import pandas as pd
-import matplotlib.pyplot as plt
+from mmengine.config import Config
+from mmseg.apis import inference_model, init_model
+from torch import nn
+from os.path import join as opj
+from utils import *
 
-def plot_means_stds_across_checkpoints(data_dir, plot_dir, splits=5):
-    """
-    Generate plots comparing means and standard deviations across checkpoints for each split,
-    ensuring the checkpoints are ordered.
-    
-    Args:
-        data_dir (str): Directory containing the summary CSV files (split{split}_summary_metrics.csv).
-        plot_dir (str): Directory to save the generated plots.
-        splits (int): Number of splits (default is 5).
-    """
-    # Ensure the plot directory exists
-    os.makedirs(plot_dir, exist_ok=True)
-    
-    # Initialize figures with three subplots for means and stds
-    fig_means, ax_means = plt.subplots(1, 3, figsize=(18, 5))
-    fig_stds, ax_stds = plt.subplots(1, 3, figsize=(18, 5))
-    metric_names = ['Dice', 'IoU', 'Acc']
-    
-    for split in range(splits):
-        # Load the summary metrics CSV for each split
-        summary_csv_path = os.path.join(data_dir, f'split-{split}/split{split}_summary_metrics.csv')
-        if not os.path.exists(summary_csv_path):
-            print(f"Summary file for split {split} not found at {summary_csv_path}")
+base_directory = '../../../AGMayer/Lizia/Organoid_Segmentation/2025_03_05-Organoid-Segmentation'
+
+project_directory = f'{base_directory}/2024_02_22-Organoid-Segmentation-lancaster'
+
+checkpoints = {
+    'split0': f'{project_directory}/Training-Results/work_dirs/split-0/iter_144000.pth',
+    'split1': f'{project_directory}/Training-Results/work_dirs/split-1/iter_128000.pth',
+    'split2': f'{project_directory}/Training-Results/work_dirs/split-2/iter_160000.pth',
+    'split3': f'{project_directory}/Training-Results/work_dirs/split-3/iter_144000.pth',
+    'split4': f'{project_directory}/Training-Results/work_dirs/split-4/iter_112000.pth'
+}
+
+for split in range(0,5):  # Loop through splits 0 to 4
+    img_dir = f'{project_directory}/Training-Results/data/images/split{split}_test'
+    mask_dir = f'{project_directory}/Training-Results/data/masks/split{split}_test'  # Ground truth masks
+    ckp_dir = os.path.dirname(checkpoints[f'split{split}'])
+    outdir_inference = opj(ckp_dir, 'inference_npy')
+    outdir_tif = opj(ckp_dir, 'inference_tif')
+    os.makedirs(outdir_inference, exist_ok=True)
+    os.makedirs(outdir_tif, exist_ok=True)
+
+    # Load the model config and checkpoint for CPU
+    ckp = checkpoints[f'split{split}']
+    cfg = Config.fromfile(f'{project_directory}/Training-Results/work_dirs/split-{split}/split-{split}.py')
+    cfg.load_from = ckp
+    cfg.model.decode_head.norm_cfg = dict(type='BN', requires_grad=True)
+
+    # Initialize the model for CPU (using map_location='cpu' to force loading on CPU)
+    model = init_model(cfg, checkpoint=ckp, device='cpu')
+    model.apply(all_eval_except_dropout)
+
+    # Prepare CSV to store the metrics
+    metrics_csv_path = f'{project_directory}/Training-Results/work_dirs/split-{split}/split{split}_metrics.csv'
+    metrics_data = []
+
+    # Perform inference and calculate metrics for each image
+    for img_loc in sorted(os.listdir(img_dir)):
+        img = os.path.join(img_dir, img_loc)
+        img_id = os.path.basename(img).replace('.jpg', '')
+
+        # Run inference on the CPU
+        result = inference_model(model, img)
+
+        # Extract the prediction mask from the SegDataSample object
+        pred = result.pred_sem_seg.data[0].cpu().numpy()
+
+        # Save the predicted mask in npy format
+        npy_pred_path = opj(outdir_inference, f'{img_id}.npy')
+        np.save(npy_pred_path, pred)
+
+        # Save the predicted mask in tif format
+        tif_pred_path = opj(outdir_tif, f'{img_id}.tif')
+        save_as_tif(pred, tif_pred_path)
+
+            # Load the ground truth mask as a TIF image
+        gt_path = os.path.join(mask_dir, f'{img_id}.tif')
+        if not os.path.exists(gt_path):
+            print(f"Ground truth mask for {img_id} not found, skipping...")
             continue
-        
-        # Read the CSV data into a DataFrame and sort by Iteration
-        summary_df = pd.read_csv(summary_csv_path)
-        summary_df = summary_df.sort_values(by='Iteration')  # Ensure iterations are ordered
-        
-        # Extract ordered iteration numbers for x-axis
-        iterations = summary_df['Iteration']
-        
-        # Plot each metric's mean and std
-        for idx, metric in enumerate(metric_names):
-            mean_col = f'{metric}_Mean'
-            std_col = f'{metric}_Std'
-            
-            # Plot mean
-            ax_means[idx].plot(iterations, summary_df[mean_col], marker='o', label=f'Split {split}')
-            ax_means[idx].set_title(f'{metric} Mean across Checkpoints')
-            ax_means[idx].set_xlabel('Iteration')
-            ax_means[idx].set_ylabel(f'{metric} Mean')
-            ax_means[idx].legend(loc='best')
-            
-            # Plot standard deviation
-            ax_stds[idx].plot(iterations, summary_df[std_col], marker='o', label=f'Split {split}')
-            ax_stds[idx].set_title(f'{metric} Standard Deviation across Checkpoints')
-            ax_stds[idx].set_xlabel('Iteration')
-            ax_stds[idx].set_ylabel(f'{metric} Std')
-            ax_stds[idx].legend(loc='best')
 
-    # Adjust layout for clarity and save figures
-    fig_means.tight_layout()
-    fig_stds.tight_layout()
-    fig_means.savefig(os.path.join(plot_dir, 'means_across_checkpoints.png'))
-    fig_stds.savefig(os.path.join(plot_dir, 'stds_across_checkpoints.png'))
-    plt.show()
+        # Use PIL to open the tif image and convert it to a numpy array
+        gt_image = Image.open(gt_path)
+        gt = np.array(gt_image)
 
-# Specify the directory where summary CSV files and plots are stored
-data_directory = 'Training-Results/work_dirs'
-plot_directory = 'Training-Results/plots'
-plot_means_stds_across_checkpoints(data_directory, plot_directory)
+        # Calculate Dice, IoU, and accuracy
+        dice = dice_coefficient(pred, gt)
+        iou = iou_score(pred, gt)
+        acc = accuracy(pred, gt)
+
+        # Store the metrics for this image in a list
+        metrics_data.append([img_id, dice, iou, acc])
+
+        print(f"Processed {img_id} - Dice: {dice:.4f}, IoU: {iou:.4f}, Accuracy: {acc:.4f}")
+
+    # Create a DataFrame for the metrics and save it as CSV
+    metrics_df = pd.DataFrame(metrics_data, columns=['Image_ID', 'Dice', 'IoU', 'Accuracy'])
+    metrics_df.to_csv(metrics_csv_path, index=False)
+    print(f"Metrics saved to {metrics_csv_path}")
+
+for split in range(0, 5):  # Adjust split range as needed
+    ground_truth_path = f'{project_directory}/Training-Data/labels'  # Folder with original npy masks
+    inference_path = f'{project_directory}/Training-Results/work_dirs/split-{split}/inference_npy'  # Folder with new npy masks
+    original_images = f'{project_directory}/Training-Data/imgs'  # Folder with jpg original images
+    output_folder = f'{project_directory}/Training-Results/work_dirs/split-{split}/inference_vis'  # Folder to save concatenated images
+
+    process_all_npy_images(ground_truth_path, inference_path, original_images, output_folder)

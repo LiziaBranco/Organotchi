@@ -3,14 +3,19 @@ import shutil
 import numpy as np
 from PIL import Image
 import pandas as pd
+import random
+from collections import defaultdict
 
-# Root directories for images and masks
-images_root_dir = 'Training-Data/imgs'
-masks_root_dir = 'Training-Data/labels'
-output_dir = 'Training-Results/data'
+# Set the base directories
+base_directory = '../../../AGMayer/Lizia/Organoid_Segmentation/2025_03_05-Organoid-Segmentation'
 
-# Load the CSV file
-csv_file = 'Organoid-Segmentation/train_and_test/splits.csv'
+project_directory = f'{base_directory}/2024_02_22-Organoid-Segmentation-lancaster'
+
+images_root_dir = f'{project_directory}/Training-Data/imgs'
+masks_root_dir = f'{project_directory}/Training-Data/labels'
+csv_file = f'{project_directory}/Training-Data/splits.csv'
+output_dir = f'{project_directory}/Training-Results/data'
+
 df = pd.read_csv(csv_file)
 
 # Clear existing output directories if they exist
@@ -87,4 +92,4 @@ for index, row in df.iterrows():
         mask_tif_filename = mask_filename.rsplit('.', 1)[0] + '.tif'  # Change extension to .tiff
         mask_img.save(os.path.join(split_mask_dir, mask_tif_filename), format='TIFF')  # Save as TIFF
 
-print("Output directories have been created, and only listed JPG and converted TIF files, along with their masks, have been copied, resized, and processed.")
+print("✅ Output directories have been created, and only listed JPG and converted TIF files, along with their masks, have been copied, resized, and processed.")
