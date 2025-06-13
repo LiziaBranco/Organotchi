@@ -57,7 +57,6 @@ def plot_boxplots(df, x, y, title, filename):
     plt.show()
     plt.close()
 
-
 def plot_lineplot(df, x, y, hue, yerr=None, title='', filename=''):
     unique_groups = df[hue].unique()
     palette = sns.color_palette("husl", len(unique_groups))
@@ -73,28 +72,6 @@ def plot_lineplot(df, x, y, hue, yerr=None, title='', filename=''):
     ax.legend()
     ax.grid(True)
     save_plot(fig, filename)
-    plt.show()
-    plt.close()
-
-
-def plot_heatmap(data, title, filename):
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(data, annot=True, fmt=".2f", cmap="coolwarm", square=True, ax=ax)
-    ax.set_title(title)
-    save_plot(fig, filename)
-    plt.show()
-    plt.close()
-
-def plot_facet_scatter(df, x, y, hue, col, title, filename):
-    unique_hues = df[hue].nunique()
-    palette = sns.color_palette("husl", unique_hues)
-
-    g = sns.relplot(data=df, x=x, y=y, hue=hue, col=col, col_wrap=5,
-                    kind='scatter', height=3, aspect=1, palette=palette)
-    g.fig.subplots_adjust(top=0.9)
-    g.fig.suptitle(title)
-    plt.tight_layout()
-    g.savefig(os.path.join(plot_dir, filename), dpi=300)
     plt.show()
     plt.close()
 
@@ -422,7 +399,6 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
     print(f"PCA grid plot saved: {filename}")
 
 import seaborn as sns
-from collections import defaultdict
 
 def plot_violin_grid_by_group(base_dir, project_dir, days, batches_complete_info, metric, metric_name,
                                group_by='condition', title=None, filename=None):
@@ -619,3 +595,83 @@ def plot_feature_comparison_with_stats(base_dir, project_dir, metric, metric_nam
     plt.show()
     plt.close()
 
+def load_outlier_summary(csv_path):
+    """Load the global summary CSV into a DataFrame."""
+    return pd.read_csv(csv_path)
+
+def merge_plate_metadata(summary_df, plates_info):
+    """Attach condition, cell-line, and batch info to the summary DataFrame."""
+    metadata_df = pd.DataFrame(plates_info)
+    metadata_df = metadata_df.rename(columns={'batch': 'batch'})
+    return summary_df.merge(metadata_df, on='batch', how='left')
+
+def plot_outlier_rate_over_days(df, group_by='condition', feature='Area_um2'):
+    """Plot outlier % over days for each group (e.g., condition, cell-line, batch)."""
+    filtered_df = df[df['Feature'] == feature].copy()
+
+    # Define consistent color palette
+    unique_groups = sorted(filtered_df[group_by].dropna().unique())
+    palette = sns.color_palette("husl", len(unique_groups))
+    group_color_map = dict(zip(unique_groups, palette))
+
+    fig = plt.figure(figsize=(12, 6))
+    sns.lineplot(
+        data=filtered_df,
+        x='Day',
+        y='Outlier_Percent',
+        hue=group_by,
+        marker='o',
+        palette=group_color_map
+    )
+    plt.title(f'Outlier Rate Over Time by {group_by.capitalize()} ({feature})')
+    plt.ylabel('Outlier Percentage')
+    plt.xlabel('Day')
+    plt.grid(True)
+    plt.legend(title=group_by)
+    plt.tight_layout()
+    plt.show()
+    filepath = os.path.join(plot_dir, f"{feature}_outlier_rate_over_time_{group_by}.png")
+    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"Outlier % over days plot saved: {filepath}")
+
+
+def plot_outlier_distribution(df, group_by='condition', feature='Area_um2'):
+    """Boxplot of outlier percentages grouped by condition/cell-line/batch."""
+    filtered_df = df[df['Feature'] == feature].copy()
+
+    # Define consistent color palette
+    unique_groups = sorted(filtered_df[group_by].dropna().unique())
+    palette = sns.color_palette("husl", len(unique_groups))
+    group_color_map = dict(zip(unique_groups, palette))
+
+    fig = plt.figure(figsize=(10, 6))
+    sns.boxplot(
+        data=filtered_df,
+        x=group_by,
+        hue = group_by,
+        y='Outlier_Percent',
+        palette=group_color_map,
+        legend = False
+    )
+    sns.stripplot(
+        data=filtered_df,
+        x=group_by,
+        y='Outlier_Percent',
+        color='black',
+        alpha=0.5,
+        jitter=True
+    )
+    plt.title(f'Outlier Rate Distribution by {group_by.capitalize()} ({feature})')
+    plt.ylabel('Outlier Percentage')
+    plt.xlabel(group_by.capitalize())
+    plt.grid(True)
+    plt.tight_layout()
+    filepath = os.path.join(plot_dir, f"{feature}_outlier_distribution_{group_by}.png")
+    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"Boxplot of outlier percentages saved: {filepath}")
+    plt.show()
+    
+summary_df = load_outlier_summary(f'{base_dir}/{project_dir}/outliers_all_batches_summary.csv')
+merged_df = merge_plate_metadata(summary_df, batches_complete_info)

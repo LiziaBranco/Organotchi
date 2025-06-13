@@ -1,4 +1,4 @@
-from utils import (
+from utils_segmentation import (
     organoid_segmentation_inference, 
     analyze_organoid_morphology, 
     apply_filtering_to_segmentations, 
