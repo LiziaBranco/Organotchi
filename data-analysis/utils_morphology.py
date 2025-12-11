@@ -17,15 +17,6 @@ from experiment_info import *
 plot_dir = os.path.join(base_dir, project_dir, 'plots')
 os.makedirs(plot_dir, exist_ok=True)
 
-plates_info_dict = {
-    batch["batch"]: {
-        "days": batch["days"],
-        "condition": batch["condition"],
-        "cell-line": batch["cell-line"]
-    }
-    for batch in batches_complete_info
-}
-
 # === Utilities ===
 
 def save_plot(fig, filename):
@@ -39,8 +30,10 @@ def filter_by_diameter(df, day):
     df = df[df['Circularity'] > 0.2]
     if day < 14:
         return df[(df['Diameter_um'] > 150) & (df['Diameter_um'] < 1000)]
+    elif day >= 14 and day < 30:
+        return df[(df['Diameter_um'] > 450) & (df['Diameter_um'] < 2000)]
     else:
-        return df[(df['Diameter_um'] > 300) & (df['Diameter_um'] < 2000)] #return df[(df['Diameter_um'] > 300) & (df['Diameter_um'] < 1500)]
+        return df[(df['Diameter_um'] > 700) & (df['Diameter_um'] < 2000)] #return df[(df['Diameter_um'] > 300) & (df['Diameter_um'] < 1500)]
 
 # === General Plotting Functions ===
 
@@ -103,9 +96,16 @@ def plot_feature_boxplots(base_dir, project_dir, batches_complete_info, features
                           filename=f'boxplot_{feature}_by_{group_by}.png')
 
 
+import os
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
 def plot_feature_over_time(base_dir, project_dir, batches_complete_info, features, metric_names, group_by="batch"):
     """
-    Plots the mean and standard deviation, and the 95% confidence interval of morphological features over time, grouped by a metadata field.
+    Plots the mean and standard deviation, the standard error of the mean (SEM), 
+    and the 95% confidence interval of morphological features over time, grouped by a metadata field.
 
     Parameters:
     - base_dir: Base directory path.
@@ -146,21 +146,65 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
             palette = sns.color_palette("husl", len(unique_groups))
             group_color_map = dict(zip(unique_groups, palette))
 
-            # 1. Plot with SD error bars
-            summary = df_all.groupby(['Group', 'Day'])[feature].agg(['mean', 'std']).reset_index()
+            # Compute summary statistics
+            summary = df_all.groupby(['Group', 'Day'])[feature].agg(['mean', 'std', 'count']).reset_index()
             summary.rename(columns={'mean': f'Mean {metric_names[i]}', 'std': 'Std'}, inplace=True)
+            summary['SEM'] = summary['Std'] / summary['count']**0.5
 
-            plot_lineplot(
-                summary,
-                x='Day',
-                y=f'Mean {metric_names[i]}',
-                hue='Group',
-                yerr='Std',
-                title=f'Mean {metric_names[i]} Over Time by {group_by.capitalize()} (±SD)',
-                filename=f'{feature}_over_time_by_{group_by}_sd.png'
-            )
+            # 1. Plot with SD error bars
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for group in unique_groups:
+                group_data = summary[summary['Group'] == group]
+                ax.errorbar(
+                    group_data['Day'],
+                    group_data[f'Mean {metric_names[i]}'],
+                    yerr=group_data['Std'],
+                    label=group,
+                    marker='o',
+                    capsize=5,
+                    color=group_color_map[group]
+                )
+            ax.set_title(f'Mean {metric_names[i]} Over Time by {group_by.capitalize()} (±SD)')
+            ax.set_xlabel('Day')
+            ax.set_ylabel(metric_names[i])
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
 
-            # 2. Plot with 95% CI shaded regions using seaborn directly
+            # Save SD error bar plot
+            plot_dir = os.path.join(base_dir, project_dir, 'plots')
+            os.makedirs(plot_dir, exist_ok=True)
+            filepath_sd = os.path.join(plot_dir, f"{feature}_over_time_by_{group_by}_sd.png")
+            plt.savefig(filepath_sd, dpi=300, bbox_inches='tight')
+            plt.show()
+            print(f"SD error bar plot saved: {filepath_sd}")
+
+            # 2. Plot with SEM error bars
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for group in unique_groups:
+                group_data = summary[summary['Group'] == group]
+                ax.errorbar(
+                    group_data['Day'],
+                    group_data[f'Mean {metric_names[i]}'],
+                    yerr=group_data['SEM'],
+                    label=group,
+                    marker='o',
+                    capsize=5,
+                    color=group_color_map[group]
+                )
+            ax.set_title(f'Mean {metric_names[i]} Over Time by {group_by.capitalize()} (±SEM)')
+            ax.set_xlabel('Day')
+            ax.set_ylabel(metric_names[i])
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+
+            filepath_sem = os.path.join(plot_dir, f"{feature}_over_time_by_{group_by}_sem.svg")
+            plt.savefig(filepath_sem, dpi=300, bbox_inches='tight')
+            plt.show()
+            print(f"SEM error bar plot saved: {filepath_sem}")
+
+            # 3. Plot with 95% CI shaded regions using seaborn directly
             fig = plt.figure(figsize=(10, 6))
             sns.lineplot(
                 data=df_all,
@@ -177,13 +221,10 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
             plt.grid(True)
             plt.tight_layout()
 
-            # Save CI plot
-            plot_dir = os.path.join(base_dir, project_dir, 'plots')
-            os.makedirs(plot_dir, exist_ok=True)
-            filepath = os.path.join(plot_dir, f"{feature}_over_time_by_{group_by}_ci.png")
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            filepath_ci = os.path.join(plot_dir, f"{feature}_over_time_by_{group_by}_ci.png")
+            plt.savefig(filepath_ci, dpi=300, bbox_inches='tight')
             plt.show()
-            print(f"CI plot saved: {filepath}")
+            print(f"CI plot saved: {filepath_ci}")
 
 def plot_pca_for_all_plates(base_dir, project_dir, days, batches_complete_info, group_by='batch'):
     """
@@ -192,7 +233,7 @@ def plot_pca_for_all_plates(base_dir, project_dir, days, batches_complete_info, 
     Parameters:
     - group_by: 'batch', 'condition', or 'cell-line'
     """
-    assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
+    #assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
 
     all_metrics = []
 
@@ -302,7 +343,7 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
     Parameters:
     - group_by: 'batch', 'condition', or 'cell-line'
     """
-    assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
+    #assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
 
     features = [
         'Area_um2', 'Diameter_um', 'Perimeter_um', 'Circularity',
@@ -409,7 +450,7 @@ def plot_violin_grid_by_group(base_dir, project_dir, days, batches_complete_info
     - metric: the metric/feature column to plot (e.g., 'Diameter_um', 'Area_um2', etc.)
     - group_by: 'batch', 'condition', or 'cell-line'
     """
-    assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
+    #assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
     
     # Map batch names to group
     plate_group_map = {batch['batch']: batch[group_by] for batch in batches_complete_info}
@@ -484,7 +525,7 @@ def plot_barplot_grid_by_group(base_dir, project_dir, days, batches_complete_inf
     - metric_name: Label to display on the y-axis
     - group_by: One of 'batch', 'condition', or 'cell-line'
     """
-    assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
+    #assert group_by in ['batch', 'condition', 'cell-line'], "group_by must be 'batch', 'condition', or 'cell-line'"
     
     plate_group_map = {batch['batch']: batch[group_by] for batch in batches_complete_info}
     valid_plates = plate_group_map.keys()
@@ -550,8 +591,9 @@ def plot_barplot_grid_by_group(base_dir, project_dir, days, batches_complete_inf
 
     print(f"Barplot grid saved: {filepath}")
 
-def plot_feature_comparison_with_stats(base_dir, project_dir, metric, metric_name, plate_day_pairs, batches_complete_info,
-                                       group_by="batch", title='Comparison', filename='comparison.png'):
+# Modified plotting function that can accept an existing ax
+def plot_feature_on_ax(ax, base_dir, project_dir, metric, metric_name, plate_day_pairs, batches_complete_info,
+                       group_by="batch", title='Comparison'):
     area_data = []
 
     for batch, day in plate_day_pairs:
@@ -567,33 +609,24 @@ def plot_feature_comparison_with_stats(base_dir, project_dir, metric, metric_nam
             print(f"Data not found for {batch} on Day {day}")
 
     if not area_data:
-        print("No data available for comparison.")
+        print(f"No data available for day {plate_day_pairs[0][1]}")
         return
 
     df_all = pd.concat(area_data, ignore_index=True)
-
     unique_groups = sorted(df_all['Group'].unique())
     n_colors = len(unique_groups)
     palette = sns.color_palette("husl", n_colors=n_colors)
     group_color_map = dict(zip(unique_groups, palette))
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    sns.barplot(data=df_all, x='Group', y=metric, errorbar='sd', ax=ax, capsize=0.1,
-                palette=group_color_map)
-
-    ax.set_title(title)
+    sns.barplot(data=df_all, x='Group', y=metric, errorbar='sd', ax=ax, capsize=0.1, palette=group_color_map)
+    ax.set_title(title, fontsize=12)
     ax.set_ylabel(metric_name)
     ax.set_xlabel(group_by)
 
     pairs = [(g1, g2) for i, g1 in enumerate(unique_groups) for g2 in unique_groups[i + 1:]]
-
     annotator = Annotator(ax, pairs, data=df_all, x='Group', y=metric)
-    annotator.configure(test='Mann-Whitney', text_format='star', loc='outside')
+    annotator.configure(test='Mann-Whitney', text_format='star', loc='inside')
     annotator.apply_and_annotate()
-
-    save_plot(fig, filename)
-    plt.show()
-    plt.close()
 
 def load_outlier_summary(csv_path):
     """Load the global summary CSV into a DataFrame."""
@@ -605,6 +638,93 @@ def merge_plate_metadata(summary_df, plates_info):
     metadata_df = metadata_df.rename(columns={'batch': 'batch'})
     return summary_df.merge(metadata_df, on='batch', how='left')
 
+def plot_feature_scatter_with_stats(
+    base_dir,
+    project_dir,
+    metric,
+    metric_name,
+    i,
+    plate_day_pairs,
+    batches_complete_info,
+    group_by="batch",
+    title_prefix="Neocortical organoids",
+    filename="feature_comparison_scatter.png"
+):
+    area_data = []
+
+    # Collect data
+    for batch, day in plate_day_pairs:
+        path = os.path.join(
+            base_dir, project_dir, "processed_data", f"Day {day}", batch, "inference_metrics", "mask_metrics.csv"
+        )
+        if os.path.exists(path):
+            df = pd.read_csv(path)
+            df_filtered = filter_by_diameter(df, day)
+            if not df_filtered.empty and metric in df_filtered.columns:
+                label = batches_complete_info[batch].get(group_by, batch)
+                df_filtered['Group'] = label
+                area_data.append(df_filtered[[metric, 'Group']])
+        else:
+            print(f"Data not found for {batch} on Day {day}")
+
+    if not area_data:
+        print("No data available for comparison.")
+        return
+
+    df_all = pd.concat(area_data, ignore_index=True)
+
+    # Plot aesthetics
+    sns.set(style="whitegrid", context="talk")
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    
+    conditions = df_all["Group"].unique()
+    palette = sns.color_palette("husl", len(conditions))
+    conditions_color_map = dict(zip(conditions, palette))
+    
+    # Jittered scatter plot with means
+    sns.stripplot(
+        data=df_all,
+        x="Group",
+        y=metric,
+        hue="Group",
+        dodge=False,
+        jitter=True,
+        palette=conditions_color_map,
+        ax=ax,
+        s=5
+    )
+
+    # Plot mean line
+    means = df_all.groupby("Group")[metric].mean()
+    for x_pos, (cond, mean_val) in enumerate(means.items()):
+        ax.hlines(y=mean_val, xmin=x_pos - 0.2, xmax=x_pos + 0.2, color="black", lw=1)
+
+    unique_groups = sorted(df_all['Group'].unique())
+    # Statistical annotation
+    pairs = [(g1, g2) for i, g1 in enumerate(unique_groups) for g2 in unique_groups[i + 1:]]
+    if pairs:
+        annotator = Annotator(ax, pairs, data=df_all, x="Group", y=metric)
+        annotator.configure(test="Mann-Whitney", text_format="star", loc="outside")
+        annotator.apply_and_annotate()
+
+    # Labels & title
+    #ax.set_title(f"{title_prefix} {day}", fontsize=16, weight="bold")
+    ax.set_xlabel("")
+    ax.set_ylim(0)
+    ax.set_ylabel(f"{metric_name}" if i == 0 else "")
+    #ax.legend_.remove()
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    
+    plot_dir = os.path.join(base_dir, project_dir, 'plots')
+    filepath= os.path.join(plot_dir, filename)
+    
+    plt.tight_layout()
+    plt.savefig(filepath, bbox_inches="tight")
+    plt.show()
+    plt.close()
+    
 def plot_outlier_rate_over_days(df, group_by='condition', feature='Area_um2'):
     """Plot outlier % over days for each group (e.g., condition, cell-line, batch)."""
     filtered_df = df[df['Feature'] == feature].copy()

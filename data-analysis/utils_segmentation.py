@@ -28,10 +28,8 @@ def clean_folder_names(directory, batch):
             folder_path = opj(directory, folder)
             if os.path.exists(folder_path):
                 # Extract base name: everything before the first space or underscore
-                base_match = re.split(r"[ _]", folder)[0]
-                base = base_match.strip()
-                if base == batch:
-                    # Find 'XinY' pattern (like 1in2) anywhere in the name
+                if batch in folder:
+                    base = batch
                     xinY_match = re.search(r"(\d+)in(\d+)", folder)
                     xinY_part = f"_{xinY_match.group()}" if xinY_match else ""
 
@@ -96,7 +94,6 @@ def filter_and_blackout_low_circularity(mask, pixel_to_micron_x, pixel_to_micron
         structure_count = 1  # We are keeping only one structure
 
     return filtered_mask, structure_count
-
 
 def organoid_segmentation_inference(checkpoint, base_dir, project_dir, days, batches):
     print(f"\n🤖 Automated Segmentation Started.")
@@ -303,43 +300,66 @@ def stitch_24wellplate_images(image_paths, output_path):
 
 def process_24wellplate_images(base_dir, project_dir, days, batch_names, project_batches):
     """Process images from raw_data and save stitched images in processed_data."""
-    
+
     for day in days:
         raw_data_dir = opj(base_dir, project_dir, 'raw_data', f'Day {day}')
-        
         processed_data_dir = opj(base_dir, project_dir, 'processed_data', f'Day {day}')
         os.makedirs(processed_data_dir, exist_ok=True)
-        
+
         for project, num_plates in zip(batch_names, project_batches):
+
             clean_folder_names(raw_data_dir, project)
             project_output_dir = opj(raw_data_dir, project)
             os.makedirs(project_output_dir, exist_ok=True)
 
             # Gather images from all subfolders for this project
-            all_images = []
+            all_images_by_batch = {}
+
             for batch in range(1, num_plates + 1):
-                folder_name = f"{project}_{batch}in{num_plates}"
-                folder_path = opj(raw_data_dir, folder_name)
-                
-                if os.path.exists(folder_path):
-                    image_files = sorted(glob.glob(opj(folder_path, "*.jpg")))
-                    all_images.extend(image_files)
-                else:
-                    folder_name = f"{project} {batch}in{num_plates}"
-                    folder_path = opj(raw_data_dir, folder_name)
-                    
-                    if os.path.exists(folder_path):
-                        image_files = sorted(glob.glob(opj(folder_path, "*.jpg")))
-                        all_images.extend(image_files)                
-                    else:
-                        print(f"Warning: {folder_path} does not exist.")
 
-            # Group images into sets of four
-            image_groups = [all_images[i:i+4] for i in range(0, len(all_images), 4)]
+                # Define expected folder names
+                folder_name_1 = f"{project}_{batch}in{num_plates}"
+                folder_name_2 = f"{project} {batch}in{num_plates}"
 
-            for idx, group in enumerate(image_groups, start=1):
-                output_filename = opj(project_output_dir, f"Tile0000{idx:02d}.jpg")
-                stitch_24wellplate_images(group, output_filename)
+                folder_path = opj(raw_data_dir, folder_name_1)
+                if not os.path.exists(folder_path):
+                    folder_path = opj(raw_data_dir, folder_name_2)
+
+                if not os.path.exists(folder_path):
+                    print(f"Warning: {folder_path} does not exist.")
+                    continue
+
+                # Collect images from that batch
+                all_images = sorted(glob.glob(opj(folder_path, "*.jpg")))
+                if not all_images:
+                    print(f"Warning: No images found in {folder_path}")
+                    continue
+
+                all_images_by_batch[batch] = all_images
+
+            # --------------------------------------------------------
+            # PROCESS EACH BATCH AND APPLY CORRECT TILE NUMBERING
+            # --------------------------------------------------------
+            for batch, image_list in all_images_by_batch.items():
+
+                # 24-well plate → 24 tiles per batch, 4 images per tile
+                # Compute tile number offset
+                start_tile = (batch - 1) * 24 + 1   # e.g., batch=1 → 1, batch=2 → 25
+                # end_tile = batch * 24             # not required explicitly
+
+                # Group every 4 images into a tile
+                image_groups = [image_list[i:i + 4] for i in range(0, len(image_list), 4)]
+
+                # Assign tile numbers with correct offset
+                for local_idx, group in enumerate(image_groups):
+                    global_tile_num = start_tile + local_idx
+
+                    output_filename = opj(
+                        project_output_dir,
+                        f"Tile0000{global_tile_num:02d}.jpg"   # matches your original Tile0000XX format
+                    )
+
+                    stitch_24wellplate_images(group, output_filename)
 
 def filter_contours(mask, pixel_to_micron_x, pixel_to_micron_y, max_area=3000000, min_area=30000, min_circularity=0.2, center_fraction=0.95):
     """
