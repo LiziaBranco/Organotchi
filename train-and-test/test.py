@@ -9,7 +9,7 @@ from utils import *  # Ensure you have the necessary utility functions
 
 base_directory = '../../../AGMayer/Lizia/Organoid_Segmentation/2025_03_05-Organoid-Segmentation'
 
-project_directory = f'{base_directory}/2025_04_23-Organoid-Segmentation-lancaster' # Paths related with Lancaster organoids training
+project_directory = f'{base_directory}/2024_06_22-Organoid-Segmentation-lancaster' # Paths related with Lancaster organoids training
 
 # Dictionary to store metrics (means, stds, etc.) for plotting
 metrics = {
@@ -26,8 +26,14 @@ for split in range(0, 5):  # Adjust split range as needed
     img_dir = f'{project_directory}/Training-Results/data/images/split{split}_test'
     mask_dir = f'{project_directory}/Training-Results/data/masks/split{split}_test'
     ckp_dir = f'{project_directory}/Training-Results/work_dirs/split-{split}'
-            
-    outdir_inference = os.path.join(ckp_dir, 'inference_npy')
+
+    # Prepare CSV for storing overall metrics of all checkpoints
+    summary_csv_path = os.path.join(ckp_dir, f'split{split}_summary_metrics.csv')
+    summary_csv_columns = ['Iteration', 'Dice_Min', 'Dice_Max', 'Dice_Mean', 'Dice_Std',
+                            'IoU_Min', 'IoU_Max', 'IoU_Mean', 'IoU_Std',
+                            'Acc_Min', 'Acc_Max', 'Acc_Mean', 'Acc_Std']
+                
+    '''    outdir_inference = os.path.join(ckp_dir, 'inference_npy')
     outdir_tif = os.path.join(ckp_dir, 'inference_tif')
 
     # Ensure directories for inference output are created
@@ -36,12 +42,7 @@ for split in range(0, 5):  # Adjust split range as needed
     # List all .pth files (checkpoints) in the checkpoint directory
     checkpoint_files = sorted(glob(os.path.join(ckp_dir, '*.pth')))
 
-    # Prepare CSV for storing overall metrics of all checkpoints
-    summary_csv_path = os.path.join(ckp_dir, f'split{split}_summary_metrics.csv')
-    summary_csv_columns = ['Iteration', 'Dice_Min', 'Dice_Max', 'Dice_Mean', 'Dice_Std',
-                            'IoU_Min', 'IoU_Max', 'IoU_Mean', 'IoU_Std',
-                            'Acc_Min', 'Acc_Max', 'Acc_Mean', 'Acc_Std']
-    summary_data = []
+summary_data = []
     checkpoints = []
 
     # Create the checkpoint_metrics directory inside the split directory
@@ -130,7 +131,7 @@ for split in range(0, 5):  # Adjust split range as needed
     # Save the summary of metrics for all checkpoints into a CSV file
     summary_df = pd.DataFrame(summary_data, columns=summary_csv_columns)
     summary_df.to_csv(summary_csv_path, index=False)
-    print(f"Summary metrics saved to {summary_csv_path}")
+    print(f"Summary metrics saved to {summary_csv_path}")'''
 
     # Call the plot function for the current split
     plot_metrics_from_csv(project_directory, summary_csv_path, split)

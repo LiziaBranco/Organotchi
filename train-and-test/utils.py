@@ -6,6 +6,16 @@ from torch import nn
 from PIL import Image
 from sklearn.metrics import jaccard_score, accuracy_score
 
+plt.rcParams.update({
+    "axes.titlesize": 14,           # Title font size
+    "axes.labelsize": 14,           # X and Y label font size
+    "xtick.labelsize": 12,          # X-axis tick labels font size
+    "ytick.labelsize": 12,          # Y-axis tick labels font size
+    "legend.fontsize": 12,          # Legend font size
+    "axes.spines.top": False,       # Remove top spine
+    "axes.spines.right": False      # Remove right spine
+})
+
 def dice_coefficient(pred, target):
     """Calculate Dice Coefficient (F1 Score)."""
     intersection = np.sum(pred * target)
@@ -193,58 +203,57 @@ def process_all_npy_images(ground_truth_path, inference_path, original_images, o
             # Call the function to process and save the concatenated image
             save_concatenated_image(ground_truth_path, inference_path, original_images, output_folder, image_name)
             
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 def plot_means_stds_across_checkpoints(data_dir, plot_dir, splits=5):
-    """
-    Generate plots comparing means and standard deviations across checkpoints for each split,
-    ensuring the checkpoints are ordered.
-    
-    Args:
-        data_dir (str): Directory containing the summary CSV files (split{split}_summary_metrics.csv).
-        plot_dir (str): Directory to save the generated plots.
-        splits (int): Number of splits (default is 5).
-    """
     # Ensure the plot directory exists
     os.makedirs(plot_dir, exist_ok=True)
     
-    # Initialize figures with three subplots for means and stds
     fig_means, ax_means = plt.subplots(1, 3, figsize=(18, 5))
     fig_stds, ax_stds = plt.subplots(1, 3, figsize=(18, 5))
+    
+    sns.set_style("whitegrid")
+    palette = sns.color_palette("husl", splits)
     metric_names = ['Dice', 'IoU', 'Acc']
     
     for split in range(splits):
-        # Load the summary metrics CSV for each split
         summary_csv_path = os.path.join(data_dir, f'split-{split}/split{split}_summary_metrics.csv')
         if not os.path.exists(summary_csv_path):
-            print(f"Summary file for split {split} not found at {summary_csv_path}")
             continue
         
-        # Read the CSV data into a DataFrame and sort by Iteration
-        summary_df = pd.read_csv(summary_csv_path)
-        summary_df = summary_df.sort_values(by='Iteration')  # Ensure iterations are ordered
+        summary_df = pd.read_csv(summary_csv_path).sort_values(by='Iteration')
         
-        # Extract ordered iteration numbers for x-axis
-        iterations = summary_df['Iteration']
+        # --- CHANGE 1: Scale iterations to thousands ---
+        iterations_k = summary_df['Iteration'] / 1000 
         
-        # Plot each metric's mean and std
         for idx, metric in enumerate(metric_names):
-            mean_col = f'{metric}_Mean'
-            std_col = f'{metric}_Std'
-            
-            # Plot mean
-            ax_means[idx].plot(iterations, summary_df[mean_col], marker='o', label=f'Split {split}')
-            ax_means[idx].set_title(f'{metric} Mean across Checkpoints')
-            ax_means[idx].set_xlabel('Iteration')
-            ax_means[idx].set_ylabel(f'{metric} Mean')
-            ax_means[idx].legend(loc='best')
-            
-            # Plot standard deviation
-            ax_stds[idx].plot(iterations, summary_df[std_col], marker='o', label=f'Split {split}')
-            ax_stds[idx].set_title(f'{metric} Standard Deviation across Checkpoints')
-            ax_stds[idx].set_xlabel('Iteration')
-            ax_stds[idx].set_ylabel(f'{metric} Std')
-            ax_stds[idx].legend(loc='best')
+            ax_means[idx].plot(
+                iterations_k, summary_df[f'{metric}_Mean'], 
+                marker='o', label=f'Split {split}', color=palette[split]
+            )
+            ax_stds[idx].plot(
+                iterations_k, summary_df[f'{metric}_Std'], 
+                marker='o', label=f'Split {split}', color=palette[split]
+            )
 
-    # Adjust layout for clarity and save figures
+    for i in range(3):
+        ax_means[i].grid(True, alpha=0.3) 
+        ax_means[i].set_title(f'{metric_names[i]} Mean')
+        
+        # --- CHANGE 2: Update X-axis label to indicate units ---
+        ax_means[i].set_xlabel('Iteration (k)') 
+        ax_means[i].legend(loc='best')
+        
+        ax_stds[i].grid(True, alpha=0.3)
+        ax_stds[i].set_title(f'{metric_names[i]} Std')
+        
+        # --- CHANGE 2: Update X-axis label to indicate units ---
+        ax_stds[i].set_xlabel('Iteration (k)')
+        ax_stds[i].legend(loc='best')
+
     fig_means.tight_layout()
     fig_stds.tight_layout()
     fig_means.savefig(os.path.join(plot_dir, 'means_across_checkpoints.png'))
