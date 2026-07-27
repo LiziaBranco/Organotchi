@@ -90,6 +90,10 @@ def _expected_classical_output_count(run):
         return 0
 
 
+def _expected_tile_stems(expected_count):
+    return {f"Tile{index:06d}" for index in range(1, expected_count + 1)}
+
+
 def _required_outputs_complete(processed_dir, expected_stems, expected_count, required_subdirs):
     for output_subdir in required_subdirs:
         output_stems = _output_stems(processed_dir, output_subdir)
@@ -128,16 +132,57 @@ def _deep_learning_day_complete(batch_name, run, day):
 
 def _classical_expected_outputs(batch_name, run, day):
     raw_dir = _raw_data_dir(day, batch_name)
-    expected_stems = _collect_stems(raw_dir, CLASSICAL_IMAGE_EXTENSIONS, prefix="Tile")
-    expected_count = len(expected_stems) or _expected_classical_output_count(run)
+    raw_tile_stems = _collect_stems(raw_dir, CLASSICAL_IMAGE_EXTENSIONS, prefix="Tile")
+    expected_count = _expected_classical_output_count(run)
+
+    if run.get("stitch", False) and expected_count > 0:
+        expected_stems = _expected_tile_stems(expected_count)
+    else:
+        expected_stems = raw_tile_stems
+        expected_count = len(expected_stems) or expected_count
+
     processed_dir = _processed_data_dir(day, batch_name)
     return processed_dir, expected_stems, expected_count
+
+
+def _prepared_classical_images_complete(batch_name, run, day, expected_stems, expected_count):
+    if not run.get("stitch", False) or expected_count <= 0:
+        return True, "prepared image check not required"
+
+    raw_dir = _raw_data_dir(day, batch_name)
+    stitched_dir = os.path.join(raw_dir, "stitched")
+    stitched_stems = _collect_stems(stitched_dir, CLASSICAL_IMAGE_EXTENSIONS, prefix="Tile")
+    if stitched_stems:
+        if expected_stems:
+            missing = expected_stems - stitched_stems
+            if missing:
+                return False, f"stitched folder missing {len(missing)} prepared images"
+        if len(stitched_stems) < expected_count:
+            return False, f"stitched folder has {len(stitched_stems)}/{expected_count} prepared images"
+        return True, "stitched images found"
+
+    raw_tile_stems = _collect_stems(raw_dir, CLASSICAL_IMAGE_EXTENSIONS, prefix="Tile")
+    if raw_tile_stems and len(raw_tile_stems) <= expected_count:
+        return True, "prepared Tile images found"
+
+    return (
+        False,
+        f"missing prepared stitched images ({len(raw_tile_stems)} root Tile images found, "
+        f"expected {expected_count} final images)",
+    )
 
 
 def _classical_segmentation_day_complete(batch_name, run, day):
     processed_dir, expected_stems, expected_count = _classical_expected_outputs(
         batch_name, run, day
     )
+
+    prepared_complete, prepared_reason = _prepared_classical_images_complete(
+        batch_name, run, day, expected_stems, expected_count
+    )
+    if not prepared_complete:
+        return False, prepared_reason
+
     return _required_outputs_complete(
         processed_dir,
         expected_stems,
@@ -150,6 +195,12 @@ def _classical_day_complete(batch_name, run, day):
     processed_dir, expected_stems, expected_count = _classical_expected_outputs(
         batch_name, run, day
     )
+
+    prepared_complete, prepared_reason = _prepared_classical_images_complete(
+        batch_name, run, day, expected_stems, expected_count
+    )
+    if not prepared_complete:
+        return False, prepared_reason
 
     complete, reason = _required_outputs_complete(
         processed_dir,

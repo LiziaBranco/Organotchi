@@ -70,7 +70,10 @@ AVAILABLE_PROJECT_DIRS = [
     'Erin',
     '2026_06_17_Dasha',
     '2026_06_25_Dasha',
-    '2026_06_25_Isabel_PB02_PB03'
+    '2026_06_25_Isabel_PB02_PB03',
+    '2026-07-21_Dasha',
+    '2026_07_13_Isabel_QB24_QB25',
+    '2026_07_13_Isabel_QB26'
 ]
 
 # Shared config

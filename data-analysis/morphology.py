@@ -26,9 +26,9 @@ plates_info_dict = {
     for batch in batches_complete_info
 }
 
-days = [0,1,2,3]
+days = [19,44,62]
 
-groups = ['batch', 'condition']
+groups = ['sample', 'condition']
 
 outlier_method = "iqr"
 iqr_multiplier = 1.5
@@ -50,7 +50,7 @@ for group in groups:
             group_by=group,
             aggregation_level=aggregation_level,
         )
-'''    plot_pca_grid_by_group(base_dir, project_dir, days=days, batches_complete_info=batches_complete_info, group_by=group)
+    #plot_pca_grid_by_group(base_dir, project_dir, days=days, batches_complete_info=batches_complete_info, group_by=group)
     
     plot_feature_grid_scatters(base_dir,  project_dir,  days=days, batches_complete_info=plates_info_dict, features=features, metric_names=features_names, group_by=group)
     plot_well_organoid_counts_over_time(base_dir, project_dir, batches_complete_info, group_by=group)
@@ -68,7 +68,7 @@ for group in groups:
         aggregation_level=outlier_aggregation_level,
     )
     
-    detection_summary, out_path = create_detection_analysis(base_dir, project_dir, batches_complete_info, batches_info, group_by=group)
-    plot_undetected_summary(detection_summary, out_path)'''
+    #detection_summary, out_path = create_detection_analysis(base_dir, project_dir, batches_complete_info, batches_info, group_by=group)
+    #plot_undetected_summary(detection_summary, out_path)
 
 print("✅ All processing and plotting completed.")

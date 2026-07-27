@@ -317,7 +317,7 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
                             label=group, marker='o', capsize=5, color=palette[group], linewidth=2, zorder=3)
             
             suffix = 'sd' if error_type == 'std' else 'sem'
-            ax.set_ylim(bottom=(data['mean']).min()*0.50, top=(data['mean'] + data['sem']).max()*1.50)
+            #ax.set_ylim(bottom=(data['mean']).min()*0.50, top=(data['mean'] + data['sem']).max()*1.50)
             add_stats_and_save(ax, f"{feature}_{aggregation_level}_{group_by}_over_time_{suffix}.png")
 
         # Plot 95% CI

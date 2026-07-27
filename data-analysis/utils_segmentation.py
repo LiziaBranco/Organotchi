@@ -439,6 +439,7 @@ def _find_tiled_image_source_folder(raw_data_dir, project, batch, num_plates, ti
 
     if num_plates == 1:
         candidate_names.extend([
+            project,
             f"{project}_N0000000",
             f"{project} N0000000",
         ])
@@ -460,7 +461,7 @@ def _find_tiled_image_source_folder(raw_data_dir, project, batch, num_plates, ti
 
         for folder_name in os.listdir(raw_data_dir):
             folder_path = opj(raw_data_dir, folder_name)
-            if not os.path.isdir(folder_path) or folder_name == project:
+            if not os.path.isdir(folder_path):
                 continue
 
             if any(folder_name.startswith(prefix) for prefix in folder_prefixes):
@@ -540,6 +541,9 @@ def prepare_classical_segmentation_images(
     Prepare tiled brightfield images for classical segmentation.
 
     The stitched outputs are written to ``raw_data/Day <day>/<batch>/Tile*.jpg``.
+    If the raw microscope tiles are already stored directly in that batch folder,
+    stitched outputs are written to ``raw_data/Day <day>/<batch>/stitched/Tile*.jpg``
+    so the source tiles are not overwritten.
     ``tile_grid`` controls how many raw microscope tiles are grouped per image.
     """
     grid_shape = _normalize_tile_grid_shape(tile_grid)
@@ -570,6 +574,11 @@ def prepare_classical_segmentation_images(
                     print(f"Warning: No tiled source folder found for {project}, batch {batch}.")
                     continue
 
+                output_dir = project_output_dir
+                if os.path.abspath(folder_path) == os.path.abspath(project_output_dir):
+                    output_dir = opj(project_output_dir, "stitched")
+                    os.makedirs(output_dir, exist_ok=True)
+
                 image_list = _collect_stitch_input_images(folder_path)
                 if not image_list:
                     print(f"Warning: No images found in {folder_path}")
@@ -590,8 +599,8 @@ def prepare_classical_segmentation_images(
                 for local_idx, group in enumerate(image_groups):
                     global_tile_num = start_tile + local_idx
                     output_filename = opj(
-                        project_output_dir,
-                        f"Tile0000{global_tile_num:02d}.jpg"
+                        output_dir,
+                        f"Tile{global_tile_num:06d}.jpg"
                     )
 
                     stitch_microscope_tile_grid(
@@ -968,8 +977,29 @@ def _get_image_measurement_context(image_id, images_per_plate=24):
     }
 
 
+def _folder_has_tile_images(directory):
+    if not os.path.isdir(directory):
+        return False
+
+    for extension in ("jpg", "jpeg", "tif", "tiff", "png"):
+        if glob.glob(opj(directory, f"Tile*.{extension}")):
+            return True
+        if glob.glob(opj(directory, f"Tile*.{extension.upper()}")):
+            return True
+
+    return False
+
+
+def _resolve_prepared_tile_image_dir(raw_data_dir):
+    stitched_dir = opj(raw_data_dir, "stitched")
+    if _folder_has_tile_images(stitched_dir):
+        return stitched_dir
+    return raw_data_dir
+
+
 def _collect_tile_images(raw_data_dir):
     """Collect Tile images, preferring JPG siblings created from TIFF inputs."""
+    tile_image_dir = _resolve_prepared_tile_image_dir(raw_data_dir)
     extension_priority = {
         ".jpg": 0,
         ".jpeg": 1,
@@ -980,7 +1010,7 @@ def _collect_tile_images(raw_data_dir):
     tile_images_by_stem = {}
 
     for extension in ("jpg", "jpeg", "tif", "tiff", "png"):
-        for tile_path in glob.glob(opj(raw_data_dir, f"Tile*.{extension}")):
+        for tile_path in glob.glob(opj(tile_image_dir, f"Tile*.{extension}")):
             stem = os.path.splitext(os.path.basename(tile_path))[0]
             current_path = tile_images_by_stem.get(stem)
             if current_path is None:
@@ -992,7 +1022,7 @@ def _collect_tile_images(raw_data_dir):
             if extension_priority[new_extension] < extension_priority[current_extension]:
                 tile_images_by_stem[stem] = tile_path
 
-        for tile_path in glob.glob(opj(raw_data_dir, f"Tile*.{extension.upper()}")):
+        for tile_path in glob.glob(opj(tile_image_dir, f"Tile*.{extension.upper()}")):
             stem = os.path.splitext(os.path.basename(tile_path))[0]
             current_path = tile_images_by_stem.get(stem)
             if current_path is None:
