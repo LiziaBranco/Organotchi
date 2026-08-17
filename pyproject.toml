@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "organotchi"
+version = "0.1.0"
+description = "Automated segmentation, morphological characterization, and longitudinal tracking of organoids from brightfield images."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy==1.26.4",
+    "pandas==2.3.3",
+    "pillow==12.2.0",
+    "scikit-image==0.25.2",
+    "scikit-learn==1.7.2",
+    "scipy==1.15.3",
+    "opencv-python-headless==4.10.0.84",
+    "matplotlib==3.10.9",
+    "seaborn==0.13.2",
+    "openpyxl==3.1.5",
+    "questionary==2.1.1",
+    "umap-learn==0.5.12",
+]
+
+# The deep-learning stack (SegFormer checkpoint inference via mmsegmentation,
+# and the "orgline" segmentation method) is optional -- every module that
+# needs torch/mmengine/mmseg soft-imports it (try/except ModuleNotFoundError)
+# so classical-segmentation and morphology-analysis workflows install and run
+# without it. Needs Python 3.10 specifically: torch==2.1.0/mmcv==2.1.0 (the
+# pins verified compatible with each other and with the `MS2D` mmseg dataset
+# class the Organotchi-manuscript repo's checkpoints were trained with) have
+# no prebuilt wheels for Python 3.12+ -- see requirements.txt's own header
+# note for the full version-compatibility story.
+[project.optional-dependencies]
+dl = [
+    "torch==2.1.0",
+    "torchvision==0.16.0",
+    "mmengine==0.10.7",
+    "mmcv==2.1.0",
+    "mmdet==3.3.0",
+]
+
+[tool.setuptools]
+packages = ["data_analysis"]
+
+[tool.setuptools.package-data]
+data_analysis = ["*.json", "templates/*"]

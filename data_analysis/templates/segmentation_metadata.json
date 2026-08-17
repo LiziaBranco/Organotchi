@@ -1,7 +1,7 @@
 {
   "project_info": {
     "project_name": "template_multi_batch_organoid_analysis",
-    "description": "Template metadata for segmentation and morphology analysis across multiple batches, conditions, imaging methods, and organoid-per-image modes.",
+    "description": "Template metadata for segmentation across multiple batches, conditions, imaging methods, and organoid-per-image modes. Grouping/plotting configuration lives in plotting_metadata.json, not here.",
     "raw_data_layout": "raw_data/Day <day>/<batch>/Tile*.tif or Tile*.jpg",
     "processed_data_layout": "processed_data/Day <day>/<batch>/"
   },
@@ -57,8 +57,7 @@
           "threshold": 128,
           "min_area": 30000,
           "max_area": 3000000,
-          "min_circularity": 0.2,
-          "center_fraction": 1.0
+          "min_circularity": 0.2
         }
       ]
     },
@@ -91,8 +90,7 @@
           "threshold": 128,
           "min_area": 30000,
           "max_area": 3000000,
-          "min_circularity": 0.2,
-          "center_fraction": 1.0
+          "min_circularity": 0.2
         }
       ]
     },
@@ -101,7 +99,7 @@
       "num_plates": 2,
       "segmentation_runs": [
         {
-          "name": "multi_organoid_24well_classical",
+          "name": "multi_organoid_24well_classical_cystic",
           "method": "cl",
           "days": [7, 10, 14, 18, 21, 24],
           "tile_grid": "5x5",
@@ -115,47 +113,28 @@
           "min_area": 30000,
           "max_area": 3000000,
           "min_circularity": 0.2,
-          "center_fraction": 1.0
+          "has_cystic_organoids": true
         }
       ]
-    }
-  ],
-  "batches_complete_info": [
-    {
-      "batch": "BATCH_CTRL_1",
-      "days": [1, 2, 4, 7, 10, 14, 16.5, 18, 21, 24, 28, 30],
-      "cell-line": "Control cell line",
-      "condition": "CTRL",
-      "treatment": "Vehicle",
-      "replicate": 1,
-      "batch_no_plate": "BATCH_CTRL"
     },
     {
-      "batch": "BATCH_CTRL_2",
-      "days": [7, 10, 14, 18, 21],
-      "cell-line": "Control cell line",
-      "condition": "CTRL",
-      "treatment": "Vehicle",
-      "replicate": 2,
-      "batch_no_plate": "BATCH_CTRL"
-    },
-    {
-      "batch": "BATCH_TREATMENT_A_1",
-      "days": [1, 2, 4, 7, 10, 14, 16.5, 18, 21, 24, 28, 30],
-      "cell-line": "Disease model cell line",
-      "condition": "TREATMENT_A",
-      "treatment": "Compound A",
-      "replicate": 1,
-      "batch_no_plate": "BATCH_TREATMENT_A"
-    },
-    {
-      "batch": "BATCH_TREATMENT_A_2",
-      "days": [7, 10, 14, 18, 21, 24],
-      "cell-line": "Disease model cell line",
-      "condition": "TREATMENT_A",
-      "treatment": "Compound A",
-      "replicate": 2,
-      "batch_no_plate": "BATCH_TREATMENT_A"
+      "batch": "BATCH_TREATMENT_B_1",
+      "num_plates": 2,
+      "segmentation_runs": [
+        {
+          "name": "early_96well_orgline",
+          "method": "orgline",
+          "days": [1, 2, 4, 7, 10, 14],
+          "tile_grid": "1x1",
+          "magnification": "4x",
+          "images_per_plate": 96,
+          "organoids_per_image": "single",
+          "pixel_to_micron_key": "4x",
+          "_comment": "OrgLine (detector-guided SAM2 prompting) as an alternative to 'dl'/'cl' -- the same tiny-checkpoint configuration benchmarked in ../benchmarking, where it was the strongest tool across every tissue tried. Must be run with the orgline_venv interpreter (../benchmarking/environments/README.md), separately from 'dl'/'cl' runs which use the main environment. orgline_repo/orgdet_checkpoint/sam2_checkpoint default to the same local clone/checkpoints benchmarking/ already uses -- only set them if your clone lives elsewhere. organoids_per_image: 'single' keeps only OrgLine's single highest-confidence detection per image; 'multiple' keeps every detection surviving orgline_conf/orgline_iou, for genuinely multi-organoid wells (e.g. a 5x5-stitched well like the classical runs above).",
+          "orgline_conf": 0.2,
+          "orgline_iou": 0.7
+        }
+      ]
     }
   ]
 }

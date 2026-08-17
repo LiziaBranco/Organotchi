@@ -1,216 +1,265 @@
+# Rebuilt from scratch on 2026-08-13 after the previous requirements.txt
+# (kept as requirements.txt.bak_inconsistent) turned out to be internally
+# inconsistent -- most importantly torch==2.4.1 paired with mmcv==2.1.0,
+# a combination with no matching prebuilt wheel anywhere (mmcv 2.1.0's CPU
+# wheels top out at torch 2.1.0; mmsegmentation/mmdet themselves declare
+# mmcv<2.2.0, and the only mmcv build with a torch-2.4 wheel is 2.2.0) --
+# and pinned to numpy==2.0.2, which breaks torch's numpy-1.x-ABI compiled
+# extensions. That combination could never have been installed together via
+# wheels; this file is a real `pip freeze` of a venv that was built version
+# by version, verified at each step against real workloads (see below), not
+# a merge of old, possibly-stale pins. Also dropped a large amount of
+# scRNA-seq/bioinformatics cruft (rpy2, scvi, anndata2ri, leidenalg, igraph,
+# hyperopt, Pyro4, opendatalab, openxlab, aliyun-*, ...) that had nothing to
+# do with any script in this Organotchi tree -- apparently
+# carried over from a much broader environment.
+#
+# Requires Python 3.10 specifically (not whatever `python3`/`python3 -m venv`
+# defaults to) -- torch==2.1.0/mmcv==2.1.0 have no prebuilt wheels for
+# Python 3.12+, and this project's own custom mmseg dataset (MS2D, see
+# below) was never tested under anything newer.
+#
+# Install with --no-deps: this file is already a full `pip freeze` (a
+# complete, verified transitive closure), and installing it WITHOUT
+# --no-deps lets pip's resolver additionally pull in plain "opencv-python"
+# (the GUI build, needing libxcb/libGL, and requiring numpy>=2) to satisfy
+# mmcv/mmengine's own unpinned "opencv-python>=3" declared dependency --
+# reintroducing the exact numpy<2-vs-opencv conflict this file's own
+# opencv-python-headless pin exists to avoid (confirmed directly: a plain
+# `pip install -r requirements.txt` pulls in opencv-python 4.11+ on top of
+# the headless build listed below; `--no-deps` does not):
+#   python3.10 -m venv venv
+#   venv/bin/pip install --no-deps -r requirements.txt
+#
+# Verified against real workloads in this venv, not just import checks:
+#   - mmsegmentation training: a real 2-iteration run of
+#     mmsegmentation/tools/train.py against
+#     configs/segformer/Organoid-Segmentation-lancaster/split-0.py on real
+#     Lancaster training data -- dataset loading, model construction,
+#     backward pass, and checkpoint save all completed successfully.
+#   - OrgLine (detector + SAM2 mask prediction): a real end-to-end run of
+#     benchmarking/adapters/predict_orgline.py against one real Intestine
+#     ground-truth image -- 62 instances detected and saved, using the SAME
+#     torch==2.1.0 as mmsegmentation above (OrgLine's own frozen env, not
+#     reproduced here, had used torch==2.13.0/numpy==2.5.1 -- installed
+#     unpinned per benchmarking/environments/README.md's own recipe, not a
+#     genuine hard requirement; it runs fine on the older, mmcv-compatible
+#     torch pinned here, so one shared venv covers both without needing
+#     OrgLine's separate orgline_venv/ going forward).
+#   - Every data_analysis/, manuscript/, and non-tool-specific benchmarking/
+#     script compiles and its heaviest modules (utils_plot.py via
+#     case_study_pipeline.import_utils_plot, utils_segmentation.py,
+#     utils_morphology.py, case_study_pipeline.py) import cleanly.
+#
+# Two real per-tool venvs remain genuinely separate on purpose -- their pins
+# are flatly incompatible with numpy<2/torch==2.1.0 above, not just
+# untested: Cellpose/StarDist/GOAT (benchmarking/environments/*_venv/,
+# numpy==2.5.1/torch==2.13.0/opencv-python-headless==5.0.0.93) and MOrgAna
+# (conda env, Python<3.10 required). See
+# benchmarking/environments/README.md.
+#
+# mmcv==2.1.0 has NO prebuilt wheel on PyPI (only a source tarball) -- a
+# plain `pip install -r requirements.txt` without the --find-links line
+# below would silently try to compile it from source (needs a C++ toolchain,
+# slow, and may not match torch's ABI). The prebuilt CPU wheel for this
+# exact torch version lives on OpenMMLab's own index instead, added below.
+#
+# A local environment quirk, unrelated to package versions: this machine's
+# python3.10 is a Guix-provided build whose linker doesn't search this
+# Ubuntu system's standard library paths, which breaks pip-installed binary
+# wheels (numpy, opencv, ...) needing libz.so.1 at runtime. venv/bin/activate
+# has been patched with a small, narrowly-scoped LD_LIBRARY_PATH fix for
+# this (see the comment there) -- plain `source venv/bin/activate` is enough,
+# no manual environment setup needed.
+#
+# opencv-python-headless (not opencv-python) is deliberate: the GUI build
+# pulls in libxcb/libGL and other display dependencies this headless,
+# CPU-only pipeline never needs, and its newer releases require numpy>=2,
+# conflicting with torch's numpy<2 requirement. mmcv/mmengine list plain
+# "opencv-python" as a dependency and `pip check` will always flag it as
+# "missing" as a result -- harmless, both packages provide the same `cv2`
+# module and installing the GUI build instead would only reintroduce the
+# libxcb dependency for no benefit.
+#
+# mmsegmentation and OrgLine are NOT in this pinned list -- both are
+# installed editable from local vendored source, not PyPI/git:
+#   pip install --no-deps -e mmsegmentation
+#     (this project's own fork -- custom MS2D dataset class, custom
+#     configs/_base_ files; the plain PyPI mmsegmentation==1.2.2 package
+#     does NOT have these and training will fail with
+#     "MS2D is not in the mmseg::dataset registry" without this)
+#   cd benchmarking/environments/OrgLine && pip install --no-deps -e .
+#     (see benchmarking/environments/README.md's OrgLine section for the
+#     checkpoint download steps this also needs)
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+--find-links https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
+
 addict==2.4.0
-albucore==0.0.23
-albumentations==2.0.5
-aliyun-python-sdk-core==2.15.2
-aliyun-python-sdk-kms==2.16.5
-anndata2ri==1.3.2
-annotated-types==0.7.0
-anyio==4.6.2.post1
-argon2-cffi==23.1.0
-argon2-cffi-bindings==21.2.0
-array_api_compat==1.9.1
-arrow==1.3.0
-asttokens==2.4.1
-async-lru==2.0.4
-attrs==24.2.0
-babel==2.16.0
-beautifulsoup4==4.12.3
-bleach==6.2.0
-certifi==2024.8.30
-cffi==1.17.1
-charset-normalizer==3.3.2
-click==8.1.7
-colorama==0.4.6
-comm==0.2.2
-contourpy==1.3.0
-crcmod==1.7
-cryptography==43.0.1
+albucore==0.0.24
+albumentations==2.0.8
+annotated-doc==0.0.5
+annotated-types==0.8.0
+antlr4-python3-runtime==4.9.3
+anyio==4.14.2
+app-model==0.5.1
+asttokens==3.0.2
+attrs==26.1.0
+beautifulsoup4==4.15.0
+build==1.5.0
+cachey==0.2.1
+certifi==2022.12.7
+charset-normalizer==2.1.1
+click==8.4.2
+cloudpickle==3.1.2
+comm==0.2.3
+contourpy==1.3.2
 cycler==0.12.1
-debugpy==1.8.8
-decorator==5.1.1
-defusedxml==0.7.1
-dnspython==2.7.0
-eval_type_backport==0.2.0
-executing==2.1.0
-fastjsonschema==2.20.0
-filelock==3.14.0
-fonttools==4.54.1
-fqdn==1.5.1
-fsspec==2024.9.0
-ftfy==6.2.3
-future==1.0.0
-h11==0.14.0
-h5py==3.12.1
-httpcore==1.0.6
-httpx==0.27.2
-hyperopt==0.1.2
-idna==3.10
-igraph==0.11.8
-imageio==2.35.1
-importlib_metadata==8.5.0
-ipykernel==6.29.5
-ipython==8.29.0
-ipywidgets==8.1.5
-isoduration==20.11.0
-jedi==0.19.2
-Jinja2==3.1.4
-jmespath==0.10.0
-joblib==1.4.2
-json5==0.9.28
-jsonpointer==3.0.0
-jsonschema==4.23.0
-jsonschema-specifications==2024.10.1
-jupyter==1.1.1
-jupyter-console==6.6.3
-jupyter-events==0.10.0
-jupyter-lsp==2.2.5
-jupyter_client==8.6.3
-jupyter_core==5.7.2
-jupyter_server==2.14.2
-jupyter_server_terminals==0.5.3
-jupyterlab==4.2.5
-jupyterlab_pygments==0.3.0
-jupyterlab_server==2.27.3
-jupyterlab_widgets==3.0.13
-kiwisolver==1.4.7
-lazy_loader==0.4
-legacy-api-wrap==1.4
-leidenalg==0.10.2
-llvmlite==0.43.0
-Markdown==3.7
-markdown-it-py==3.0.0
-MarkupSafe==2.1.5
-matplotlib==3.9.2
-matplotlib-inline==0.1.7
-matplotlib-venn==1.1.1
+dask==2026.7.1
+debugpy==1.8.21
+decorator==5.3.1
+docstring_parser==0.18.0
+einops==0.8.2
+et_xmlfile==2.0.0
+exceptiongroup==1.3.1
+executing==2.2.1
+filelock==3.29.0
+flexcache==0.3
+flexparser==0.4
+fonttools==4.63.0
+freetype-py==2.5.1
+fsspec==2026.4.0
+ftfy==6.3.1
+gdown==6.1.0
+h11==0.16.0
+h5py==3.16.0
+HeapDict==1.0.1
+hf-xet==1.6.0
+hsluv==5.0.4
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.27.0
+hydra-core==1.3.5
+idna==3.4
+ImageIO==2.37.4
+importlib_metadata==9.0.0
+in-n-out==0.2.1
+ipykernel==6.31.0
+ipython==8.39.0
+ipython_pygments_lexers==1.1.1
+jedi==0.20.0
+Jinja2==3.1.6
+joblib==1.5.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+jupyter_client==8.9.1
+jupyter_core==5.9.1
+kiwisolver==1.5.0
+lazy-loader==0.5
+llvmlite==0.49.0
+locket==1.0.0
+magicgui==0.10.2
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+matplotlib==3.10.9
+matplotlib-inline==0.2.2
 mdurl==0.1.2
-mistune==3.0.2
-mmcls==0.25.0
 mmcv==2.1.0
 mmdet==3.3.0
-mmengine==0.10.5
-mmsegmentation==1.2.2
-model-index==0.1.11
+mmengine==0.10.7
 mpmath==1.3.0
-natsort==8.4.0
-nbclient==0.10.0
-nbconvert==7.16.4
-nbformat==5.10.4
+napari==0.7.1
+napari-console==0.1.4
+napari-plugin-engine==0.2.1
+napari-svg==0.2.1
 nest-asyncio==1.6.0
-networkx==3.3
-notebook==7.2.2
-notebook_shim==0.2.4
-numba==0.60.0
-numpy==2.0.2
-numpy-groupies==0.11.2
-nvidia-cublas-cu12==12.1.3.1
-nvidia-cuda-cupti-cu12==12.1.105
-nvidia-cuda-nvrtc-cu12==12.1.105
-nvidia-cuda-runtime-cu12==12.1.105
-nvidia-cudnn-cu12==9.1.0.70
-nvidia-cufft-cu12==11.0.2.54
-nvidia-curand-cu12==10.3.2.106
-nvidia-cusolver-cu12==11.4.5.107
-nvidia-cusparse-cu12==12.1.0.106
-nvidia-nccl-cu12==2.20.5
-nvidia-nvjitlink-cu12==12.6.68
-nvidia-nvtx-cu12==12.1.105
-opencv-python==4.10.0.84
+networkx==3.4.2
+npe2==0.8.3
+numba==0.67.0
+numpy==1.26.4
+omegaconf==2.3.1
 opencv-python-headless==4.10.0.84
-opendatalab==0.0.10
-openmim==0.3.9
-openxlab==0.1.1
-ordered-set==4.1.0
-oss2==2.17.0
-overrides==7.7.0
-packaging==24.1
-pandas==2.2.3
-pandocfilters==1.5.1
-parso==0.8.4
-patsy==1.0.1
+openpyxl==3.1.5
+packaging==26.3
+pandas==2.3.3
+parso==0.8.7
+partd==1.4.2
+patsy==1.0.2
 pexpect==4.9.0
-pillow==10.4.0
-platformdirs==4.3.6
-prettytable==3.11.0
-prometheus_client==0.21.0
-prompt_toolkit==3.0.48
-psutil==6.1.0
+pillow==12.2.0
+Pint==0.24.4
+platformdirs==4.11.2
+pooch==1.9.0
+prettytable==3.18.0
+prompt_toolkit==3.0.53
+psutil==7.2.2
+psygnal==0.15.1
 ptyprocess==0.7.0
 pure_eval==0.2.3
-pycocotools==2.0.8
-pycparser==2.22
-pycryptodome==3.20.0
-pydantic==2.9.2
-pydantic_core==2.23.4
-Pygments==2.18.0
-pymongo==4.10.1
-pynndescent==0.5.13
-pyparsing==3.1.4
-Pyro4==4.82
+py-cpuinfo==9.0.0
+pycocotools==2.0.11
+pyconify==0.2.1
+pydantic==2.13.4
+pydantic-extra-types==2.11.1
+pydantic-settings==2.15.0
+pydantic_core==2.46.4
+Pygments==2.20.0
+pynndescent==0.6.0
+PyOpenGL==3.1.10
+pyparsing==3.3.2
+pyproject_hooks==1.2.0
+PySocks==1.7.1
 python-dateutil==2.9.0.post0
-python-json-logger==2.0.7
-pytz==2023.4
-PyWavelets==1.8.0
-PyYAML==6.0.2
-pyzmq==26.2.0
-questionary==2.1.0
-referencing==0.35.1
-regex==2024.9.11
-requests==2.32.3
-rfc3339-validator==0.1.4
-rfc3986-validator==0.1.1
-rich==13.4.2
-rpds-py==0.21.0
-rpy2==3.5.16
-scikit-image==0.26.0
-scikit-learn==1.5.2
-scikit-misc==0.5.1
-scipy==1.14.1
-scvi==0.6.8
+python-dotenv==1.2.2
+pytz==2026.3.post1
+PyYAML==6.0.3
+pyzmq==27.1.0
+qtconsole==5.7.2
+QtPy==2.4.3
+questionary==2.1.1
+referencing==0.37.0
+regex==2026.7.19
+requests==2.28.1
+rich==15.0.0
+roifile==2025.12.12
+rpds-py==0.30.0
+safetensors==0.8.0
+scikit-image==0.25.2
+scikit-learn==1.7.2
+scipy==1.15.3
 seaborn==0.13.2
-Send2Trash==1.8.3
-serpent==1.41
-session_info==1.0.0
-setuptools==75.1.0
-shapely==2.0.6
-simsimd==6.2.1
-six==1.16.0
-sniffio==1.3.1
-soupsieve==2.6
+shapely==2.1.2
+shellingham==1.5.4
+simsimd==6.5.16
+six==1.17.0
+soupsieve==2.9.2
 stack-data==0.6.3
 statannotations==0.7.2
-statsmodels==0.14.4
-stdlib-list==0.11.0
-stringzilla==3.12.3
-sympy==1.13.3
-tabulate==0.9.0
-termcolor==2.4.0
-terminado==0.18.1
+statsmodels==0.14.6
+stringzilla==5.1.2
+superqt==0.8.2
+sympy==1.14.0
+termcolor==3.3.0
 terminaltables==3.1.10
-texttable==1.7.0
-threadpoolctl==3.5.0
-tifffile==2024.9.20
-tinycss2==1.4.0
-tomli==2.0.1
-torch==2.4.1+cpu
-torchaudio==2.4.1+cpu
-torchvision==0.19.1+cpu
-tornado==6.4.1
-tqdm==4.65.2
-traitlets==5.14.3
-triton==3.0.0
-types-python-dateutil==2.9.0.20241003
-typing_extensions==4.12.2
-tzdata==2024.2
-tzlocal==5.2
-umap-learn==0.5.7
-uri-template==1.3.0
-urllib3==1.26.20
-wcwidth==0.2.13
-webcolors==24.11.1
-webencodings==0.5.1
-websocket-client==1.8.0
-widgetsnbextension==4.0.13
-xlrd==2.0.1
-yapf==0.40.2
-zipp==3.20.2
+threadpoolctl==3.6.0
+tifffile==2025.5.10
+timm==1.0.28
+tomli==2.4.1
+tomli_w==1.2.0
+toolz==1.1.0
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+tornado==6.5.8
+tqdm==4.70.0
+traitlets==5.16.1
+typer==0.27.1
+typing-inspection==0.4.4
+typing_extensions==4.15.0
+tzdata==2026.3
+umap-learn==0.5.12
+urllib3==1.26.13
+vispy==0.16.2
+wcwidth==0.8.2
+wrapt==2.3.0
+yapf==0.43.0
+zipp==4.1.0
