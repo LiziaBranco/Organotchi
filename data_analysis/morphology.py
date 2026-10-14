@@ -1,28 +1,16 @@
 """
-Morphology-metrics extraction for a selected project -- reads whatever
-segmentation masks segmentation.py has already produced
-(``inference_filtered_npy``/``inference_npy``) and writes the per-object/
-per-well CSVs under each day/batch's ``inference_metrics/`` (``mask_metrics
-.csv``, ``well_metrics_summary.csv``, and -- for runs with
-``track_light_dark_split: true`` -- ``light_dark_metrics.csv`` plus the
-``light_dark_overlay_jpg/`` QC images).
-
-Split out of segmentation.py on purpose: segmentation (producing masks) and
-morphology extraction (measuring them) are independent stages that don't
-need to run back-to-back in the same process, and a metrics-only code
-change (e.g. a fixed morphology formula) now only means re-running this
-script, not touching segmentation.py at all. Run this after segmentation.py
-has produced masks for the days/batches/runs you care about; run plot.py
-after this to turn the resulting CSVs into figures/statistics.
+Segmentation (producing masks) and morphology extraction (measuring them) are
+independent stages. Run this after segmentation.py has produced masks for the
+relevant days/batches/runs; run plot.py after this to turn the resulting CSVs
+into figures/statistics.
 
 Uses experiment_info.py's own project-selection prompt and
 ``segmentation_metadata.json``-driven ``batches_info``/``get_segmentation_
 runs``, exactly like segmentation.py -- the same project selection, the
 same per-run config (``days``, ``organoid_mode``, pixel calibration,
 ``track_light_dark_split`` and its related keys), just without any of
-segmentation.py's own model-loading/venv-switching machinery, none of
-which morphology extraction needs (it never imports torch/mmsegmentation/
-OrgLine, only numpy/pandas/PIL/skimage).
+segmentation.py's own model-loading machinery, none of which morphology
+extraction needs.
 
 Run: python3 morphology.py [--resume | --force | --check] [--only-methods ...]
 """
@@ -131,9 +119,7 @@ def _extract_metrics_for_run(batch_name, run, force):
     ``run["days"]``. Each of the functions called here already skips any
     (day, batch) combination whose own outputs are current unless
     ``force=True``, so this can always be called with the run's full day
-    list -- no separate day-by-day pre-filter needed here the way
-    segmentation.py's own mask-completeness check has to do for
-    segmentation itself.
+    list..
     """
     days = run["days"]
     pixel_size = get_pixel_to_micron_for_run(run)

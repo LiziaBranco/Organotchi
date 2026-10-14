@@ -5,17 +5,6 @@ segmentation (producing masks) and morphology extraction (measuring them)
 are two independent stages, each with its own script (segmentation.py /
 morphology.py) and its own utils module (this one / utils_segmentation.py).
 
-Not to be confused with utils_plot.py (formerly this file's own name),
-which reads the CSVs this module writes and turns them into figures/
-statistics -- that is a third, downstream stage again, with no dependency
-in this direction (utils_plot.py never imports from here).
-
-Depends on utils_segmentation.py for a handful of shared low-level
-primitives (pixel/micron conversion, image-context parsing, tile
-collection, TIFF normalization) that segmentation itself also uses --
-one-directional (this module imports from utils_segmentation, never the
-reverse), so segmentation.py never needs to know morphology extraction
-exists.
 """
 
 import os
@@ -40,21 +29,7 @@ from utils_segmentation import (
 
 def _load_grayscale_for_intensity_analysis(tile_path):
     """Grayscale pixels for a photometric measurement (the light-dark Otsu
-    split, etc.) read straight from the original raw file -- bypassing
-    segmentation's own lossy JPEG re-encoding entirely for this read, while
-    still applying the exact same 8-bit normalization
-    (_convert_tif_to_jpg_array) so pixel VALUES stay consistent with
-    whatever segmentation itself saw.
-
-    Segmentation still runs on the JPEG-converted copy elsewhere (that
-    conversion exists for the segmentation model's own input, shared with
-    the DL pipeline) -- this function is only for measurements that depend
-    on the precise pixel-intensity distribution, where JPEG's blockiness/
-    ringing artifacts (worst on soft, low-contrast gradients -- exactly
-    what an organoid's own rim/boundary looks like) would otherwise bias
-    the result. A non-TIFF source (already read directly, no conversion, by
-    segmentation's own TIFF handling too) is loaded identically either
-    way -- no behavior change for those.
+    split, etc.) read straight from the original raw file.
     """
     extension = os.path.splitext(tile_path)[1].lower()
     if extension not in {".tif", ".tiff"}:
@@ -108,10 +83,7 @@ def _summarize_metrics_by_image(metrics_df, feature_columns):
         # Sum, not mean: the well's total organoid coverage. Unlike
         # Detected_Organoid_Count or any per-object shape descriptor, this is
         # unaffected by touching/merged organoids being traced as a single
-        # contour -- a merged blob's area still equals the true combined
-        # physical area of the organoids inside it, so this total is a
-        # meaningful per-well metric even when object-level counts/shapes for
-        # that well are not.
+        # contour.
         total_area = (
             metrics_df
             .groupby(group_cols, dropna=False)["Area_um2"]
@@ -210,8 +182,8 @@ def extract_organoid_morphology_metrics(
 
                     image_context = _get_image_measurement_context(image_id, images_per_plate)
 
-                    # 1. Get properties WITH spacing (for Area and Axis lengths which are supported)
-                    # Note: major/minor axis lengths ARE supported with spacing
+                    # 1. Get properties WITH spacing (for Area and Axis lengths, which support it;
+                    # major/minor axis lengths are supported with spacing)
                     props_um = measure.regionprops(labeled_mask, spacing=(pixel_to_micron_y, pixel_to_micron_x), cache=True)
 
                     # 2. Get properties WITHOUT spacing (pixels) to avoid the NotImplementedError
@@ -252,22 +224,7 @@ def extract_organoid_morphology_metrics(
                         diameter_um = np.sqrt(4 * area_um2 / np.pi)
                         circularity = (4 * np.pi * area_um2) / (perimeter_um ** 2) if perimeter_um > 0 else np.nan
                         aspect_ratio = major_axis_um / minor_axis_um if minor_axis_um > 0 else np.nan
-                        # Roundness = how much of the object's own bounding (Feret max)
-                        # diameter is filled by its area -- the standard ImageJ/literature
-                        # definition, 4*Area / (pi * MaxDiameter^2). Previously used the
-                        # ellipse-fit major axis instead of Feret max diameter, which made
-                        # it an almost perfect duplicate of Aspect_Ratio/Eccentricity
-                        # (both already derived from the same major/minor-axis fit) --
-                        # confirmed empirically on real data (PCH2_CB, ~15k organoids):
-                        # Spearman(old Roundness, Aspect_Ratio) = -1.00, i.e. zero
-                        # independent information. Feret max is a different geometric
-                        # primitive (the longest caliper span, not an ellipse fit), so
-                        # this version captures a genuinely distinct "compactness relative
-                        # to overall extent" concept instead of just re-deriving elongation.
                         roundness = (4 * area_um2) / (np.pi * (feret_max_um ** 2)) if feret_max_um > 0 else np.nan
-
-                        # Skeletonization is the slowest metric for multi-object images.
-                        # Use the object's bounding-box crop instead of the full stitched mask.
                         skeleton = morphology.skeletonize(p_px.image)
                         skeleton_length_um = _pixel_length_to_micron(
                             np.sum(skeleton), pixel_to_micron_x, pixel_to_micron_y
@@ -322,17 +279,7 @@ def _classify_light_dark_pixels(gray_image, mask, foreground_polarity="dark", mi
     """Otsu-split ``gray_image``'s pixels within ``mask`` into a lighter
     "light" class vs a darker "dark" class. Returns ``(light_pixel_mask,
     split_threshold, eta_squared, has_bimodal_split)`` -- ``split_threshold``
-    is ``nan`` iff ``mask`` has no foreground pixels at all (the caller's
-    sentinel for "empty region").
-
-    This is the shared classification step behind both
-    ``estimate_light_dark_split_from_mask`` (which turns it into area/count
-    statistics) and ``generate_light_dark_overlay_masks`` (which turns it
-    directly into a rendered image) -- factored out so the two can never
-    disagree about what counts as light except by the Otsu logic itself
-    changing. See ``estimate_light_dark_split_from_mask``'s docstring for the
-    full reasoning behind the Otsu split and the eta-squared bimodality
-    check.
+    is ``nan`` if ``mask`` has no foreground pixels at all.
     """
     foreground_polarity = _normalize_foreground_polarity(foreground_polarity)
     values = gray_image[mask > 0].astype(np.float64)
@@ -373,50 +320,27 @@ def estimate_light_dark_split_from_mask(
 ):
     """Split one segmented (mask) region's own grayscale pixels into a
     lighter outer "light" region vs a darker inner "dark" region, from the
-    intensity histogram of just those pixels -- not the whole image. Called
+    intensity histogram of just those pixels. Called
     per organoid (one ``mask``/``gray_image`` pair per object, e.g.
     ``region.image``/``region.image_intensity`` from a labeled mask's own
-    regionprops) -- this is a per-organoid property, not something that
-    only makes sense pooled across every organoid sharing a well/tile.
+    regionprops).
 
-    Originally written to estimate cystic (translucent) vs solid tissue
-    area (and later generalized once to "core"/"rim") -- the naming has
-    since been generalized again to "light"/"dark" because visual
-    inspection of the actual rendered split (see
-    ``generate_light_dark_overlay_masks``) showed it consistently
-    classifying a light region hugging each organoid's own outer boundary,
-    not discrete internal structures -- i.e. an optical brightness split
-    between an organoid's periphery and its denser center (the organoid's
-    curved edge transmits more light than its denser center in brightfield
-    imaging), not necessarily true cyst/lumen formation, and not always a
-    literal anatomical "core"/"rim" either. That same split is still useful
-    on its own terms: tracked over a developmental timeline with consistent
-    imaging settings, it tracks how an organoid's own dense (dark) region is
-    expanding or shrinking relative to its total area -- regardless of
-    whether the lighter region reflects real cyst biology for a given
-    project. Projects that do have genuine cystic/translucent structures can
-    still read the same numbers as cystic-vs-solid area; the naming here no
-    longer assumes that's what every project is measuring.
-
-    Early on, the segmented region is close to uniformly dark: the
-    histogram of its own pixel values has a single peak. As a lighter
-    peripheral region grows (whether from real cyst formation or simply
+    Early on, the segmented region is close to uniformly dark (the
+    histogram of its own pixel values has a single peak). As a lighter
+    peripheral region grows (whether from cyst formation or from
     organoid size/shape change), a second, lighter peak appears alongside
     the dark region's peak. Otsu's method finds the threshold that best
     separates a bimodal histogram into two classes; run on just the masked
     pixels (not the whole image, and not the global segmentation
-    `threshold`, which separates organoid-vs-background, a different
-    problem), it recovers a within-organoid light/dark split.
+    `threshold`, which separates organoid-vs-background),
+    it recovers a within-organoid light/dark split.
 
-    Otsu always returns *some* threshold, even on a genuinely unimodal
+    Otsu always returns *some* threshold, even on a unimodal
     histogram (common on early days, before much of a light region has
     developed) -- so a nonzero light fraction on those days doesn't
-    necessarily mean anything real was separated. ``has_bimodal_split``
-    flags this: it's the two classes' eta-squared (between-class variance /
-    total variance -- the same quantity Otsu itself maximizes over candidate
-    thresholds, normalized here into a standard, bounded [0, 1] effect size:
-    the fraction of the pixel intensities' overall variance "explained" by
-    the two-class split) compared against ``min_eta_squared``. Below that
+    necessarily mean anything "biologically meaningful" was separated.
+    ``has_bimodal_split`` flags this by comparing it's the two classes'
+    eta-squared  and ``min_eta_squared``. Below that
     cutoff, the two "classes" barely differ from each other relative to the
     pixels' own spread -- there's no real separable structure yet, and
     ``light_dark_ratio``/``light_fraction`` should be read as "not yet
@@ -453,8 +377,7 @@ def estimate_light_dark_split_from_mask(
     ``return_pixel_mask=True`` additionally includes ``light_pixel_mask`` (a
     boolean array, same shape as ``mask``, True wherever a pixel was
     classified light) -- for callers building a visual classification
-    overlay (see ``generate_light_dark_overlay_masks``) rather than just the
-    aggregate area/count statistics above.
+    overlay (see ``generate_light_dark_overlay_masks``).
     """
     empty_region_stats = {
         "light_region_count": 0,
@@ -542,34 +465,20 @@ def extract_light_dark_metrics(
     ``segmentation_metadata.json``, estimate each individual organoid's own
     light-vs-dark split, from its own grayscale pixel histogram (see
     ``estimate_light_dark_split_from_mask`` for what "light"/"dark" mean
-    here and why the naming is deliberately not "cystic").
+    here).
 
-    Per-organoid, not pooled across a well/tile -- whether *this* organoid
-    has a large or small rim is a per-organoid property. Pooling every
-    organoid sharing a tile/well into one Otsu split (an earlier version of
-    this function did) means a well containing organoids at different
-    developmental stages gets one blended number describing none of them,
-    and the single-organoid/multiple-organoid stage transition many
-    projects have (imaging regime switches partway through the timecourse)
-    silently changes what the value even means, on top of the
-    pseudoreplication risk of averaging per well downstream without ever
-    having a real per-organoid value to average in the first place.
+    Per-organoid, not pooled across a well/tile.
 
     Reads each tile's own raw grayscale pixels via
-    ``_load_grayscale_for_intensity_analysis`` -- bypassing the lossy
-    TIFF->JPEG conversion segmentation itself uses (see that function's
-    docstring for why that matters specifically for a pixel-intensity-
-    histogram-based measurement like the Otsu split here).
+    ``_load_grayscale_for_intensity_analysis``.
 
     ``Organoid_ID``/``Object_Label``/``Object_Count_In_Image``/``Area_um2``/
     ``Diameter_um`` use the exact same per-object identity/geometry as
-    ``extract_organoid_morphology_metrics``, so ``filter_by_diameter`` and
-    the rest of the object-level plotting machinery in
+    ``extract_organoid_morphology_metrics``, so ``apply_outlier_removal_gate``
+    and the rest of the object-level plotting machinery in
     ``utils_plot.py`` (outlier removal, well-mean aggregation,
     per-window trend plots) work on this CSV directly via
-    plotting_metadata.json's ``window_instant_metrics`` -- rather than the
-    well-level-only ``well_metric_plots`` path (which assumes one row per
-    well and would silently mis-aggregate a per-object CSV).
+    plotting_metadata.json's ``window_instant_metrics``.
 
     Writes one row per organoid to ``inference_metrics/light_dark_metrics.csv``.
     """
@@ -706,15 +615,14 @@ def generate_light_dark_overlay_masks(
     default, an RGB tuple) for the light regions
     ``estimate_light_dark_split_from_mask`` classifies -- a direct visual
     answer to "what is this pipeline actually calling light vs dark", to
-    sanity-check the Otsu-based split against the real images rather than
-    trusting ``light_dark_metrics.csv``'s numbers alone. Uses the exact same
-    classification logic (``_classify_light_dark_pixels``, with the same
-    ``foreground_polarity``/``min_eta_squared``) that
-    ``extract_light_dark_metrics`` uses for its actual statistics -- an
+    sanity-check the Otsu-based split against the real images.
+    Uses the exact same classification logic (``_classify_light_dark_pixels``,
+    with the same ``foreground_polarity``/``min_eta_squared``) that
+    ``extract_light_dark_metrics`` uses for its statistics -- an
     organoid whose split isn't considered bimodal still gets its (likely
     small/spurious) light pixels colored here, so this also doubles as a
     visual check of whether ``min_eta_squared`` is behaving sensibly on
-    real images, not just a number in a CSV.
+    real images.
 
     Written as its own sibling folder under each day/batch's
     ``processed_data/``, ``light_dark_overlay_jpg/`` -- alongside
@@ -726,8 +634,7 @@ def generate_light_dark_overlay_masks(
     pipeline's own connected-component labeling, whichever produced this
     project's masks) when available, so touching/adjacent organoids are
     correctly told apart in the overlay; falls back to
-    ``measure.label(mask > 0)`` connected components otherwise (the same
-    fallback ``extract_light_dark_metrics`` uses).
+    ``measure.label(mask > 0)`` connected components otherwise.
     """
     print(f"\n🎨 Generating Light-Dark Overlay Masks")
     light_color_rgb = tuple(int(c) for c in light_color)

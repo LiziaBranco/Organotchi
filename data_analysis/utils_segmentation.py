@@ -146,23 +146,22 @@ def remove_small_objects_by_area(
     mask,
     pixel_to_micron_x,
     pixel_to_micron_y,
-    min_area=30000,
+    min_area,
     max_area=None,
 ):
     """
     Removes connected components whose area (in um^2) is <= min_area, or (if
     max_area is given) >= max_area. max_area is optional and None by default
     -- unlike earlier versions of this pipeline, an upper size bound is not
-    applied unless explicitly requested, since real organoids legitimately
-    grow larger over the developmental timeline and an unconditional upper
-    bound risked discarding genuine late-timepoint organoids.
+    applied unless explicitly requested, since real organoids grow larger
+    over the developmental timeline and an unconditional upper bound risked
+    discarding late-timepoint organoids.
 
     Unlike the single-structure selection this used to be bundled with (see
     keep_most_circular_if_crowded), every component that passes the area gate
-    is kept here -- this step only removes objects that are clearly too small
-    (or, if requested, too large) to be a real structure, run BEFORE erosion
-    so a legitimately-sized object is judged on its actual size, not its
-    post-erosion size.
+    is kept here -- this step only removes objects too small (or, if
+    requested, too large) to be a real structure, run BEFORE erosion so an
+    object is judged on its actual size, not its post-erosion size.
 
     Area is computed with the same unit-conversion helper used by the
     classical pipeline (``_pixel_area_to_micron``), so DL and classical size
@@ -187,16 +186,19 @@ def remove_low_circularity_objects(
     mask,
     pixel_to_micron_x,
     pixel_to_micron_y,
-    circularity_threshold=0.3,
+    min_circularity,
 ):
     """
-    Removes connected components whose circularity is <= circularity_threshold.
+    Removes connected components whose circularity is < min_circularity.
     Every component that passes is kept (not just the single largest) -- see
     keep_most_circular_if_crowded for the step that narrows down to one
     structure when more than a couple of candidates remain.
 
     Circularity is computed with the same unit-conversion helpers used by the
     classical pipeline (``_pixel_area_to_micron``/``_pixel_length_to_micron``).
+    Same parameter name and inclusive (>=) boundary as
+    ``_region_passes_circularity_filter`` and every other circularity filter
+    in this module.
     """
     labeled_mask, num_features = measure.label(mask, connectivity=LABEL_CONNECTIVITY, return_num=True)
     properties = measure.regionprops(labeled_mask)
@@ -206,7 +208,7 @@ def remove_low_circularity_objects(
         area = _pixel_area_to_micron(prop.area, pixel_to_micron_x, pixel_to_micron_y)
         perimeter = _pixel_length_to_micron(prop.perimeter, pixel_to_micron_x, pixel_to_micron_y)
         circularity = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0
-        if circularity > circularity_threshold:
+        if circularity >= min_circularity:
             filtered_mask[labeled_mask == prop.label] = 255
 
     return filtered_mask
@@ -256,7 +258,7 @@ def keep_most_circular_if_crowded(
 
     return filtered_mask, structure_count
 
-def _get_center_crop_box(width, height, keep_fraction=0.85):
+def _get_center_crop_box(width, height, keep_fraction):
     """Return a centered crop box that preserves the original aspect ratio."""
     crop_width = max(1, int(round(width * keep_fraction)))
     crop_height = max(1, int(round(height * keep_fraction)))
@@ -460,9 +462,9 @@ def run_deep_learning_segmentation(
                 "images_failed": len(failed_images),
             })
 
-def apply_erosion(mask, kernel_size=(10, 10), iterations=1):
+def apply_erosion(mask, kernel_size, iterations=1):
     """
-    Apply subtle erosion to the binary mask to refine structures slightly.
+    Erode the binary mask to refine its structures.
     The kernel_size determines the size of the structuring element, and iterations
     control the number of times erosion is applied.
 
@@ -486,8 +488,11 @@ def apply_dilation(mask, initial_kernel_size=(10, 10), iterations=10, reduction_
     - initial_kernel_size: Starting kernel size (width, height).
     - iterations: Number of dilation steps.
     - reduction_factor: Multiplier to decrease kernel size per iteration (e.g., 0.7 reduces it by 30% per step).
+
+    iterations=0 is a no-op, returning the mask unchanged (cast to uint8,
+    matching apply_erosion's own no-op return type).
     """
-    dilated_mask = mask.copy()
+    dilated_mask = mask.astype(np.uint8)
 
     kernel_size = np.array(initial_kernel_size)
 
@@ -504,7 +509,7 @@ def apply_dilation(mask, initial_kernel_size=(10, 10), iterations=10, reduction_
 def fill_black_holes(mask):
     """
     Fill black holes (internal gaps) within white structures in a binary mask.
-    This helps restore continuous structures after erosion and dilation.
+    Restores continuous structures after erosion and dilation.
 
     Uses ``_find_object_contours`` (RETR_CCOMP, top-level contours only)
     rather than raw ``RETR_EXTERNAL``: if the mask contains any enclosing
@@ -546,21 +551,6 @@ def apply_filtering_to_segmentations(
     - `inference_filtered/` (JPG images)
     - `inference_filtered_npy/` (Numpy array masks)
     - `inference_comparison/` (Comparison images)
-
-    Defaults (min_area=10000, min_circularity=0.1, erosion/dilation disabled,
-    max_objects_before_circularity_pick=1) are chosen by grid search against
-    split-0's held-out VALIDATION set (see the Organotchi-manuscript repo's
-    train_and_test/tune_classical_filter.py), not hand-picked -- the previous defaults
-    (min_area=30000, min_circularity=0.3, erosion/dilation kernel (10,10))
-    were found to make aggregate Dice/IoU on the TEST set *worse* than no
-    filtering at all (mean Dice 0.963 raw vs. 0.888 filtered), driven mostly
-    by real, correctly-shaped early-timepoint (Day 2) organoids whose area
-    fell under the old 30,000 um^2 floor and were discarded outright. The
-    tuned defaults instead improve on the (untouched-during-tuning) test set:
-    mean Dice 0.963 raw vs. 0.967 filtered, mean IoU 0.933 vs. 0.941, and
-    only 1/286 images end up with no surviving structure (down from 21).
-    Re-run tune_classical_filter.py if the checkpoint or dataset changes
-    enough that these defaults might no longer be optimal.
 
     Filter order: (1) remove objects too small to be a real structure (by
     area, BEFORE erosion, so a legitimately-sized object is judged on its
@@ -613,13 +603,13 @@ def apply_filtering_to_segmentations(
                         min_area=min_area, max_area=max_area,
                     )
 
-                    # (2) Apply subtle erosion to refine the surviving structures.
+                    # (2) Erode the surviving structures to refine them.
                     eroded_mask = apply_erosion(size_filtered_mask, kernel_size=erosion_kernel_size)
 
                     # (3) Remove structures with low circularity.
                     circularity_filtered_mask = remove_low_circularity_objects(
                         eroded_mask, pixel_to_micron_x, pixel_to_micron_y,
-                        circularity_threshold=min_circularity,
+                        min_circularity=min_circularity,
                     )
 
                     # (4) If more than max_objects_before_circularity_pick structures remain,
@@ -1033,11 +1023,52 @@ def _find_object_contours(mask):
 
 
 
-def _filter_single_organoid_contours(mask, pixel_to_micron_x, pixel_to_micron_y, max_area=3000000, min_area=30000, min_circularity=0.2, debug_capture=None):
+def _label_candidate_regions(mask):
+    """Label connected foreground components as candidate objects for
+    shape-based (area/circularity) filtering.
+
+    Plain connected-component labeling, not an OpenCV contour hierarchy: a
+    region nested inside another region's hole -- e.g. a real organoid
+    sitting inside a well-boundary ring's interior -- is already its own
+    disjoint foreground component, since the ring's hole is background
+    between them. The ring itself is still labeled as its own (separate)
+    component and is expected to be screened out downstream by the area/
+    circularity filters, same as every other candidate -- no equivalent of
+    ``cv2.RETR_CCOMP``'s parent/child bookkeeping is needed for this.
+
+    Returns (labeled_mask, regions) -- ``regions`` from
+    ``skimage.measure.regionprops``, each with a ``.label`` matching its
+    value in ``labeled_mask``.
     """
-    Filters contours based on circularity and area.
+    labeled_mask = measure.label(mask, connectivity=LABEL_CONNECTIVITY)
+    return labeled_mask, measure.regionprops(labeled_mask)
+
+
+def _regions_to_mask(labeled_mask, regions):
+    """Binary mask of exactly the given regions' own foreground pixels (not
+    a filled reconstruction) -- used both for the real pipeline's final
+    mask and for ``debug_capture`` panels at intermediate stages."""
+    if not regions:
+        return np.zeros_like(labeled_mask, dtype=np.uint8)
+    labels = [r.label for r in regions]
+    return (np.isin(labeled_mask, labels) * 255).astype(np.uint8)
+
+
+def _filter_single_organoid_candidates(mask, pixel_to_micron_x, pixel_to_micron_y, max_area=3000000, min_area=30000, min_circularity=0.2, debug_capture=None):
+    """
+    Filters candidate objects based on circularity and area.
 
     If multiple objects pass the filter, only the largest one is retained.
+
+    Candidates are connected components of the binary mask (see
+    ``_label_candidate_regions``), and area/circularity are computed via
+    ``_region_shape_metrics`` -- the same ``skimage.measure.regionprops``
+    area/perimeter used by morphology extraction (``utils_morphology.py``)
+    and by the deep-learning pipeline's own post-processing filter
+    (``remove_low_circularity_objects``, ``keep_most_circular_if_crowded``),
+    not an OpenCV contour polygon's enclosed area/arc length -- so a given
+    object gets the same circularity value regardless of which stage of the
+    pipeline is asking.
 
     Parameters:
     - mask: Binary image mask.
@@ -1046,46 +1077,45 @@ def _filter_single_organoid_contours(mask, pixel_to_micron_x, pixel_to_micron_y,
     - max_area: Maximum object area in square microns.
     - min_area: Minimum object area in square microns.
     - min_circularity: Minimum circularity threshold.
-    - debug_capture: optional dict, populated with ``"raw_contours"`` (all
-      contours found), then ``"after_circularity_filter"``, ``"after_area_filter"``
-      (the same two sequential checks ``_filter_multi_organoid_contours``
-      uses, applied here in the same order, before the largest-only pick),
-      and ``"accepted_contours"`` (the final single kept contour, if any) --
-      for step-by-step pipeline inspection.
+    - debug_capture: optional dict, populated with ``"raw_regions"`` (every
+      candidate found), then ``"after_circularity_filter"``,
+      ``"after_area_filter"`` (the same two sequential checks
+      ``_filter_multi_organoid_candidates`` uses, applied here in the same
+      order, before the largest-only pick), and ``"accepted_regions"`` (the
+      final single kept region, if any) -- each a binary mask, for
+      step-by-step pipeline inspection.
 
     Returns:
     - filtered_mask: Binary mask with only valid objects.
     """
 
-    contours = _find_object_contours(mask)
+    labeled_mask, regions = _label_candidate_regions(mask)
 
     if debug_capture is not None:
-        debug_capture["raw_contours"] = list(contours)
+        debug_capture["raw_regions"] = _regions_to_mask(labeled_mask, regions)
 
     # Apply the two checks sequentially (circularity -> area), so each
     # one's own contribution to the final count is separately inspectable
     # (see `fit_experiment_data.py`'s `--diagnose` mode).
-    after_circularity = [c for c in contours if _contour_passes_circularity_filter(c, pixel_to_micron_x, pixel_to_micron_y, min_circularity)]
+    after_circularity = [r for r in regions if _region_passes_circularity_filter(r, pixel_to_micron_x, pixel_to_micron_y, min_circularity)]
     if debug_capture is not None:
-        debug_capture["after_circularity_filter"] = list(after_circularity)
+        debug_capture["after_circularity_filter"] = _regions_to_mask(labeled_mask, after_circularity)
 
-    after_area = [c for c in after_circularity if _contour_passes_area_filter(c, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area)]
+    after_area = [r for r in after_circularity if _region_passes_area_filter(r, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area)]
     if debug_capture is not None:
-        debug_capture["after_area_filter"] = list(after_area)
+        debug_capture["after_area_filter"] = _regions_to_mask(labeled_mask, after_area)
 
-    valid_contours = [(c, _contour_shape_metrics(c, pixel_to_micron_x, pixel_to_micron_y)[0]) for c in after_area]
+    valid_regions = [(r, _region_shape_metrics(r, pixel_to_micron_x, pixel_to_micron_y)[0]) for r in after_area]
 
-    # In single-organoid mode, keep exactly one candidate: the largest valid contour.
-    if valid_contours:
-        valid_contours = [max(valid_contours, key=lambda item: item[1])]
+    # In single-organoid mode, keep exactly one candidate: the largest valid region.
+    if valid_regions:
+        valid_regions = [max(valid_regions, key=lambda item: item[1])]
 
+    accepted = [r for r, _ in valid_regions]
     if debug_capture is not None:
-        debug_capture["accepted_contours"] = [contour for contour, _ in valid_contours]
+        debug_capture["accepted_regions"] = _regions_to_mask(labeled_mask, accepted)
 
-    # Draw final filtered contours
-    filtered_mask = np.zeros_like(mask)
-    for contour, _ in valid_contours:
-        cv2.drawContours(filtered_mask, [contour], -1, 255, thickness=cv2.FILLED)
+    filtered_mask = _regions_to_mask(labeled_mask, accepted)
 
     return _keep_largest_connected_component(filtered_mask)
 
@@ -1112,22 +1142,63 @@ def _normalize_foreground_polarity(foreground_polarity):
     raise ValueError("foreground_polarity must be 'dark' or 'bright'.")
 
 
-def _resolve_threshold_value(img_uint8, threshold):
+def _center_fraction_boolean_mask(shape, center_fraction):
+    """Boolean mask (True = inside), for a circle concentric with the image,
+    of diameter ``center_fraction`` times the image's **width**. Returns
+    ``None`` if ``center_fraction`` is ``None`` or >= 1.0 (disabled).
+
+    Width, not the shorter dimension, is the right reference here: in these
+    stitched multi-well images the well itself is wider than it is tall, and
+    its physical diameter in pixels is close to the image's width -- using
+    width means ``center_fraction`` close to 1.0 tracks the well's actual
+    edge, rather than leaving a wide unaccounted margin on the image's long
+    axis the way ``min(height, width)`` would (confirmed on one project's data).
+
+    Approximates the physical well boundary as a circle rather than
+    detecting the well's actual edge per image -- cheaper and more robust,
+    and correct as long as a batch's magnification/tile grid keeps the
+    well's apparent size in-frame consistent across its images (true within
+    any one batch here). Shared by ``_resolve_threshold_value`` (to keep an
+    edge artifact like a well-boundary ring out of Otsu's own histogram, not
+    just out of the final mask) and ``_apply_center_fraction_mask``.
+    """
+    if center_fraction is None or center_fraction >= 1.0:
+        return None
+    height, width = shape[:2]
+    center_y, center_x = height / 2.0, width / 2.0
+    radius = center_fraction * width / 2.0
+    yy, xx = np.ogrid[:height, :width]
+    distance_from_center = np.sqrt((yy - center_y) ** 2 + (xx - center_x) ** 2)
+    return distance_from_center <= radius
+
+
+def _resolve_threshold_value(img_uint8, threshold, center_fraction=None):
     """Resolve ``threshold`` to a numeric cutoff: passed through as-is unless
     it's the literal string ``"otsu"``, in which case it's computed fresh
     from this image's own grayscale histogram (``skimage.filters.threshold_otsu``).
     A fixed numeric threshold assumes stable, uniform illumination across the
     whole timecourse; Otsu instead adapts per image, which matters for
-    projects where brightness genuinely drifts day to day (confirmed on
-    AnnaRaic -- a fixed threshold detected organoids on Day 0 but missed them
-    entirely on Day 1)."""
+    projects where brightness drifts day to day (confirmed on one
+    project's data -- a fixed threshold detected organoids on Day 0 but missed
+    them entirely on Day 1).
+
+    ``center_fraction``, if given, restricts Otsu's own histogram to pixels
+    inside that circle (see ``_center_fraction_boolean_mask``) -- applied
+    before thresholding in the sense that matters: a well-boundary ring or
+    other edge-of-frame artifact never gets to bias which cutoff Otsu picks
+    in the first place, rather than being masked out only after a
+    (potentially already-skewed) threshold has been chosen. Ignored for a
+    fixed numeric threshold, which doesn't depend on image content at all.
+    """
     if isinstance(threshold, str) and threshold.strip().lower() == "otsu":
-        return float(threshold_otsu(img_uint8))
+        in_circle = _center_fraction_boolean_mask(img_uint8.shape, center_fraction)
+        pixels = img_uint8[in_circle] if in_circle is not None else img_uint8
+        return float(threshold_otsu(pixels))
     return float(threshold)
 
 
-def _global_threshold_mask(img_uint8, threshold, foreground_polarity):
-    threshold_value = _resolve_threshold_value(img_uint8, threshold)
+def _global_threshold_mask(img_uint8, threshold, foreground_polarity, center_fraction=None):
+    threshold_value = _resolve_threshold_value(img_uint8, threshold, center_fraction=center_fraction)
     if foreground_polarity == "bright":
         return np.where(img_uint8 > threshold_value, 255, 0).astype(np.uint8)
     return np.where(img_uint8 < threshold_value, 255, 0).astype(np.uint8)
@@ -1139,33 +1210,26 @@ def _apply_center_fraction_mask(mask, center_fraction):
     ``center_fraction=None`` (or >= 1.0) disables this and returns ``mask``
     unchanged.
 
-    Width, not the shorter dimension, is the right reference here: in these
-    stitched multi-well images the well itself is wider than it is tall, and
-    its physical diameter in pixels is close to the image's width -- using
-    width means ``center_fraction`` close to 1.0 tracks the well's actual
-    edge, rather than leaving a wide unaccounted margin on the image's long
-    axis the way ``min(height, width)`` would (confirmed on Zeynep-CP).
-
-    Approximates the physical well boundary as a circle rather than
-    detecting the well's actual edge per image -- cheaper and more robust,
-    and correct as long as a batch's magnification/tile grid keeps the
-    well's apparent size in-frame consistent across its images (true within
-    any one batch here). Pixels are dropped outright, right after
-    thresholding, rather than scored per detected object later: a
-    well-boundary ring's own contour traces along the image edge however
-    large its enclosed area is, so removing everything outside the circle
-    before contour extraction ever runs means the ring never survives to be
-    misjudged as an organoid downstream, instead of relying on
-    circularity/area filtering to reject it after the fact.
+    This is the *second* application of ``center_fraction`` in the
+    pipeline -- ``_resolve_threshold_value`` already kept the excluded
+    region out of Otsu's own histogram (see that function's docstring).
+    This one still runs, on the binarized mask, after thresholding: for
+    ``foreground_polarity="dark"`` a pixel outside the circle can still
+    satisfy ``pixel < threshold`` and come out as foreground (nothing about
+    resolving the threshold value keeps that from happening), so an
+    edge-of-frame artifact still needs to be dropped explicitly here.
+    Pixels are dropped outright, right after thresholding, rather than
+    scored per detected object later: a well-boundary ring's own contour
+    traces along the image edge however large its enclosed area is, so
+    removing everything outside the circle before contour extraction ever
+    runs means the ring never survives to be misjudged as an organoid
+    downstream, instead of relying on circularity/area filtering to reject
+    it after the fact.
     """
-    if center_fraction is None or center_fraction >= 1.0:
+    in_circle = _center_fraction_boolean_mask(mask.shape, center_fraction)
+    if in_circle is None:
         return mask
-    height, width = mask.shape[:2]
-    center_y, center_x = height / 2.0, width / 2.0
-    radius = center_fraction * width / 2.0
-    yy, xx = np.ogrid[:height, :width]
-    distance_from_center = np.sqrt((yy - center_y) ** 2 + (xx - center_x) ** 2)
-    return np.where(distance_from_center <= radius, mask, 0).astype(mask.dtype)
+    return np.where(in_circle, mask, 0).astype(mask.dtype)
 
 
 def _apply_morphological_closing(mask, close_kernel_size):
@@ -1196,7 +1260,7 @@ def _apply_morphological_closing(mask, close_kernel_size):
     nothing (fails circularity) or just the thin crescent.
 
     A kernel large enough to bridge the gaps actually seen is also large
-    enough to bridge the *spacing* between two genuinely separate, adjacent
+    enough to bridge the *spacing* between two separate, adjacent
     organoids -- keep it just big enough for the former, checked visually
     (``fit_experiment_data.py --sweep close_kernel_size``), not larger.
     """
@@ -1247,10 +1311,10 @@ def _filter_regions_by_max_area(mask, pixel_to_micron_x, pixel_to_micron_y, max_
     """Drop connected regions at/above ``max_area`` (in um^2), right after
     ``_filter_regions_by_min_area`` -- same early stage, same rationale.
 
-    Note this also rejects a genuine cluster of several touching/merged
+    This also rejects a genuine cluster of several touching/merged
     organoids traced as one oversized contour -- there is no touching-object
     split step to recover them into individual organoids, so an oversized
-    contour here is simply dropped.
+    contour here is dropped.
     """
     contours = _find_object_contours(mask)
     return _keep_contours_matching(
@@ -1294,10 +1358,14 @@ def _create_classical_binary_mask(
     background; ``foreground_polarity`` ("dark" or "bright") says which side
     of that cutoff the organoid is on.
 
-    ``center_fraction`` (see ``_apply_center_fraction_mask``), if given,
-    is applied immediately after thresholding -- before ``min_area``/
-    ``max_area`` -- to drop a well-boundary ring (or any other large
-    edge-of-frame artifact) before it can reach contour extraction at all.
+    ``center_fraction`` is applied twice: first to keep an edge-of-frame
+    artifact (e.g. a well-boundary ring) out of Otsu's own histogram when
+    resolving the threshold value (see ``_resolve_threshold_value``), then
+    -- still before ``min_area``/``max_area`` -- to zero it out of the
+    binarized mask itself (see ``_apply_center_fraction_mask``), since
+    resolving the threshold correctly doesn't by itself keep an
+    outside-the-circle pixel from still satisfying the threshold
+    comparison and coming out as foreground.
 
     ``close_kernel_size`` (see ``_apply_morphological_closing``) runs next,
     still before ``min_area``/``max_area``: it bridges small gaps in an
@@ -1326,8 +1394,8 @@ def _create_classical_binary_mask(
     foreground_polarity = _normalize_foreground_polarity(foreground_polarity)
     img_uint8 = img_array.astype(np.uint8)
     if debug_capture is not None:
-        debug_capture["threshold_value"] = _resolve_threshold_value(img_uint8, threshold)
-    binary_mask = _global_threshold_mask(img_uint8, threshold, foreground_polarity)
+        debug_capture["threshold_value"] = _resolve_threshold_value(img_uint8, threshold, center_fraction=center_fraction)
+    binary_mask = _global_threshold_mask(img_uint8, threshold, foreground_polarity, center_fraction=center_fraction)
 
     if debug_capture is not None:
         debug_capture["threshold"] = binary_mask.copy()
@@ -1390,7 +1458,8 @@ def _segment_single_organoid_brightfield_image(
     debug_capture=None,
 ):
     """
-    Segment an image based on grayscale intensity and apply contour filtering.
+    Segment an image based on grayscale intensity and apply area/circularity
+    candidate filtering.
 
     Parameters:
     - image_path: Path to the input image.
@@ -1406,9 +1475,9 @@ def _segment_single_organoid_brightfield_image(
     - close_kernel_size: if given, bridges small gaps in an object's
       boundary via morphological closing (see
       ``_apply_morphological_closing``), before ``min_area``/``max_area``.
-    - debug_capture: optional dict, populated with intermediate masks/contour
-      lists from every pipeline sub-stage (see ``_create_classical_binary_mask``,
-      ``_filter_single_organoid_contours``) for step-by-step pipeline
+    - debug_capture: optional dict, populated with intermediate masks from
+      every pipeline sub-stage (see ``_create_classical_binary_mask``,
+      ``_filter_single_organoid_candidates``) for step-by-step pipeline
       inspection. Has no effect on the result.
 
     Returns:
@@ -1432,7 +1501,7 @@ def _segment_single_organoid_brightfield_image(
         debug_capture=debug_capture,
     )
 
-    filtered_mask = _filter_single_organoid_contours(
+    filtered_mask = _filter_single_organoid_candidates(
         binary_mask, pixel_to_micron_x, pixel_to_micron_y, max_area, min_area, min_circularity,
         debug_capture=debug_capture,
     )
@@ -1440,26 +1509,36 @@ def _segment_single_organoid_brightfield_image(
     return filtered_mask
 
 
-def _contour_shape_metrics(contour, pixel_to_micron_x, pixel_to_micron_y):
-    area = _pixel_area_to_micron(cv2.contourArea(contour), pixel_to_micron_x, pixel_to_micron_y)
-    perimeter = _pixel_length_to_micron(cv2.arcLength(contour, True), pixel_to_micron_x, pixel_to_micron_y)
+def _region_shape_metrics(region, pixel_to_micron_x, pixel_to_micron_y):
+    """Area (um^2) and isoperimetric circularity (4*pi*Area/Perimeter^2) of
+    a labeled connected-component region (a ``skimage.measure.regionprops``
+    object), computed the same way morphology extraction
+    (``utils_morphology.py``) and the deep-learning pipeline's own
+    post-processing filter (``remove_low_circularity_objects``,
+    ``keep_most_circular_if_crowded``) do -- from ``region.area``/
+    ``region.perimeter`` on the labeled pixel mask, not an OpenCV polygon
+    contour's enclosed area/arc length. One shape-metric implementation
+    used everywhere means a given object gets the same circularity value
+    regardless of which stage of the pipeline is asking."""
+    area = _pixel_area_to_micron(region.area, pixel_to_micron_x, pixel_to_micron_y)
+    perimeter = _pixel_length_to_micron(region.perimeter, pixel_to_micron_x, pixel_to_micron_y)
     circularity = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0
     return area, circularity
 
 
-def _contour_passes_area_filter(contour, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area):
-    area, _ = _contour_shape_metrics(contour, pixel_to_micron_x, pixel_to_micron_y)
+def _region_passes_area_filter(region, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area):
+    area, _ = _region_shape_metrics(region, pixel_to_micron_x, pixel_to_micron_y)
     lower_ok = area > min_area if min_area is not None else True
     upper_ok = area < max_area if max_area is not None else True
     return lower_ok and upper_ok
 
 
-def _contour_passes_circularity_filter(contour, pixel_to_micron_x, pixel_to_micron_y, min_circularity):
-    _, circularity = _contour_shape_metrics(contour, pixel_to_micron_x, pixel_to_micron_y)
+def _region_passes_circularity_filter(region, pixel_to_micron_x, pixel_to_micron_y, min_circularity):
+    _, circularity = _region_shape_metrics(region, pixel_to_micron_x, pixel_to_micron_y)
     return circularity >= min_circularity
 
 
-def _filter_multi_organoid_contours(
+def _filter_multi_organoid_candidates(
     mask,
     pixel_to_micron_x,
     pixel_to_micron_y,
@@ -1469,45 +1548,45 @@ def _filter_multi_organoid_contours(
     debug_capture=None,
 ):
     """
-    Filter a binary mask while preserving all valid organoid-like contours.
+    Filter a binary mask while preserving all valid organoid-like candidate
+    objects.
 
-    This function keeps every contour that passes the circularity and area
+    This function keeps every connected component (see
+    ``_label_candidate_regions``) that passes the circularity and area
     filters. It is intended for fields where multiple organoids can be
     present in the same image. Touching/merged organoids are not split --
-    a contour spanning several organoids is judged (and accepted or
+    a component spanning several organoids is judged (and accepted or
     rejected) as one shape.
 
-    ``debug_capture``, if given a dict, gets populated with the contour list
-    at each stage -- ``"raw_contours"`` (straight out of
-    ``_find_object_contours``), then ``"after_circularity_filter"``, then
-    ``"after_area_filter"`` (same as ``"accepted_contours"``, the final
+    ``debug_capture``, if given a dict, gets populated with a binary mask at
+    each stage -- ``"raw_regions"`` (straight out of
+    ``_label_candidate_regions``), then ``"after_circularity_filter"``, then
+    ``"after_area_filter"`` (same as ``"accepted_regions"``, the final
     result) -- for step-by-step pipeline inspection. Has no effect on the
     returned mask/count.
     """
-    contours = _find_object_contours(mask)
+    labeled_mask, regions = _label_candidate_regions(mask)
 
     if debug_capture is not None:
-        debug_capture["raw_contours"] = list(contours)
+        debug_capture["raw_regions"] = _regions_to_mask(labeled_mask, regions)
 
     # Apply the two checks sequentially (circularity -> area), so each
     # one's own contribution to the final count is separately inspectable
     # (see `fit_experiment_data.py`'s `--diagnose` mode).
-    after_circularity = [c for c in contours if _contour_passes_circularity_filter(c, pixel_to_micron_x, pixel_to_micron_y, min_circularity)]
+    after_circularity = [r for r in regions if _region_passes_circularity_filter(r, pixel_to_micron_x, pixel_to_micron_y, min_circularity)]
     if debug_capture is not None:
-        debug_capture["after_circularity_filter"] = list(after_circularity)
+        debug_capture["after_circularity_filter"] = _regions_to_mask(labeled_mask, after_circularity)
 
-    valid_contours = [c for c in after_circularity if _contour_passes_area_filter(c, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area)]
+    valid_regions = [r for r in after_circularity if _region_passes_area_filter(r, pixel_to_micron_x, pixel_to_micron_y, min_area, max_area)]
     if debug_capture is not None:
-        debug_capture["after_area_filter"] = list(valid_contours)
+        debug_capture["after_area_filter"] = _regions_to_mask(labeled_mask, valid_regions)
 
-    filtered_mask = np.zeros_like(mask)
-    for contour in valid_contours:
-        cv2.drawContours(filtered_mask, [contour], -1, 255, thickness=cv2.FILLED)
+    filtered_mask = _regions_to_mask(labeled_mask, valid_regions)
 
     if debug_capture is not None:
-        debug_capture["accepted_contours"] = valid_contours
+        debug_capture["accepted_regions"] = filtered_mask
 
-    return filtered_mask, len(valid_contours)
+    return filtered_mask, len(valid_regions)
 
 
 def _segment_multi_organoid_brightfield_image(
@@ -1527,14 +1606,15 @@ def _segment_multi_organoid_brightfield_image(
     Segment all organoid-like objects in one stitched brightfield image.
 
     The binarization logic mirrors the single-organoid classical segmentation:
-    foreground structures become binary mask objects, then contour filtering
+    foreground structures become binary mask objects, then candidate
+    filtering (area/circularity, see ``_filter_multi_organoid_candidates``)
     removes small, very large, or non-circular objects without reducing the
     mask to a single organoid.
 
     ``center_fraction``: see ``_segment_single_organoid_brightfield_image``
     -- especially relevant here, since a well-boundary ring visible in a
     multi-organoid field would otherwise sit among the real organoids as
-    just another (very large, low-circularity) candidate contour.
+    just another (very large, low-circularity) candidate object.
 
     ``close_kernel_size``: see ``_segment_single_organoid_brightfield_image``
     -- particularly relevant for cystic organoids, whose rim sometimes
@@ -1542,9 +1622,9 @@ def _segment_multi_organoid_brightfield_image(
     than a closed loop.
 
     ``debug_capture``, if given a dict, gets populated with intermediate
-    masks/contour lists from every pipeline sub-stage (see
-    ``_create_classical_binary_mask``, ``_filter_multi_organoid_contours``)
-    for step-by-step pipeline inspection. Has no effect on the result.
+    masks from every pipeline sub-stage (see ``_create_classical_binary_mask``,
+    ``_filter_multi_organoid_candidates``) for step-by-step pipeline
+    inspection. Has no effect on the result.
     """
     image_path = _convert_tif_to_jpg_for_segmentation(image_path)
     with Image.open(image_path) as img:
@@ -1563,7 +1643,7 @@ def _segment_multi_organoid_brightfield_image(
         debug_capture=debug_capture,
     )
 
-    filtered_mask, object_count = _filter_multi_organoid_contours(
+    filtered_mask, object_count = _filter_multi_organoid_candidates(
         binary_mask,
         pixel_to_micron_x,
         pixel_to_micron_y,
@@ -1590,13 +1670,13 @@ def segment_classical_brightfield_image(
     close_kernel_size=None,
     debug_capture=None,
 ):
-    """Segment one brightfield image using the classical threshold/contour workflow.
+    """Segment one brightfield image using the classical threshold/candidate-filter workflow.
 
     ``center_fraction`` / ``close_kernel_size``: see
     ``_segment_single_organoid_brightfield_image``.
 
     ``debug_capture``, if given a dict, gets populated with intermediate
-    masks/contour lists from every pipeline sub-stage, regardless of
+    masks from every pipeline sub-stage, regardless of
     ``organoid_mode`` -- see ``_segment_single_organoid_brightfield_image`` /
     ``_segment_multi_organoid_brightfield_image`` for the exact keys. Used by
     ``fit_experiment_data.py``'s ``--diagnose`` mode for step-by-step
@@ -1914,7 +1994,12 @@ def run_classical_brightfield_segmentation(
     close_kernel_size=None,
     run_name=None,
 ):
-    """Segment prepared brightfield images and save masks, labels, and a summary CSV."""
+    """Segment prepared brightfield images and save masks, labels, and a summary CSV.
+
+    The summary CSV's ``Resolved_Threshold`` column is the numeric cutoff
+    actually used for each tile -- identical to ``threshold`` unless
+    ``threshold="otsu"``, in which case it's resolved fresh per image (see
+    ``_resolve_threshold_value``)."""
     for day in days:
         for project in project_names:
             raw_data_dir = opj(base_dir, project_dir, 'raw_data', f'Day {day}', project)
@@ -1937,6 +2022,7 @@ def run_classical_brightfield_segmentation(
                 tile_name = os.path.splitext(os.path.basename(tile_path))[0]
                 image_context = _get_image_measurement_context(tile_name, images_per_plate)
                 try:
+                    debug_capture = {}
                     mask, object_count = segment_classical_brightfield_image(
                         tile_path,
                         pixel_to_micron_x,
@@ -1949,7 +2035,9 @@ def run_classical_brightfield_segmentation(
                         foreground_polarity=foreground_polarity,
                         center_fraction=center_fraction,
                         close_kernel_size=close_kernel_size,
+                        debug_capture=debug_capture,
                     )
+                    resolved_threshold = debug_capture.get("threshold_value", threshold)
                 except Exception as exc:
                     print(f"⚠️  Failed to segment {tile_path}: {exc}")
                     failed_images.append({"Image": tile_name, "Stage": "classical_segmentation", "Error": str(exc)})
@@ -1972,6 +2060,7 @@ def run_classical_brightfield_segmentation(
                     "Organoid_Mode": organoid_mode,
                     "Foreground_Polarity": foreground_polarity,
                     "Threshold": threshold,
+                    "Resolved_Threshold": resolved_threshold,
                     "Min_Area_um2": min_area,
                     "Max_Area_um2": max_area,
                     "Min_Circularity": min_circularity,
@@ -2027,11 +2116,6 @@ def run_classical_brightfield_segmentation(
 # function's own comment at the cache lookup site.
 _ORGLINE_MODEL_CACHE = {}
 
-# The nc=18/PANet-head/`.eval()` bug-fix loader is shared with
-# Organotchi-manuscript/benchmarking/adapters/predict_orgline.py (a
-# separate repo, imported from there as `data_analysis.orgline_bridge`) --
-# see orgline_bridge.py's module docstring for the three upstream bugs it
-# works around.
 from orgline_bridge import build_detector as _build_orgline_detector  # noqa: E402
 from orgline_bridge import build_sam2_predictor as _build_orgline_sam2_predictor  # noqa: E402
 
@@ -2046,6 +2130,8 @@ def run_orgline_segmentation(
     sam2_checkpoint=None,
     conf=0.2,
     iou=0.7,
+    imgsz=640,
+    agnostic_nms=False,
     organoid_mode="single",
     images_per_plate=24,
     device="cpu",
@@ -2055,16 +2141,17 @@ def run_orgline_segmentation(
     detector whose backbone is a SAM2 Hiera image encoder, generating
     bounding-box prompts for a SAM2 mask predictor) and save masks, labels,
     and a summary CSV -- the same "tiny"/low-VRAM checkpoint configuration
-    (orgdet_tiny.pt + sam2_hiera_tiny.pt, confidence 0.20, IoU 0.70) used in
-    Organotchi-manuscript/benchmarking/adapters/predict_orgline.py (a
-    separate repo), where OrgLine was the strongest tool across every
-    tissue tried (see that repo's benchmarking/README.md).
+    (orgdet_tiny.pt + sam2_hiera_tiny.pt, confidence 0.20, IoU 0.70) this
+    project's own benchmarking work found to be the strongest tool across
+    every tissue tried.
 
-    Must be run with the OrgLine venv's interpreter (see
-    ../environments/README.md) -- OrgLine's dependencies (its
-    own torch/torchvision pins, the vendored Ultralytics-style detector,
-    SAM2) are isolated from mmsegmentation's ("dl" method) and are not
-    expected to be importable from the main environment.
+    Runs under this tool's own main environment once the ``orgline`` extra
+    is installed (``pip install -e ".[orgline]"``) -- OrgLine's dependencies
+    (torch/torchvision, the vendored Ultralytics-style detector, SAM2) are
+    all importable there directly (confirmed with a real detector build +
+    prediction + SAM2 predictor build). See ``../environments/README.md``
+    for the full setup (cloning OrgLine itself, downloading its
+    checkpoints) -- no separate virtual environment needed.
 
     Reads the same pre-stitched "Tile*" images, via the same
     ``_collect_tile_images``, as ``run_classical_brightfield_segmentation``
@@ -2075,16 +2162,17 @@ def run_orgline_segmentation(
     ``organoid_mode="single"`` keeps only OrgLine's single highest-confidence
     detection per image (matching the classical/DL pipelines' single-organoid
     convention, e.g. Lancaster brain); ``"multiple"`` keeps every detection
-    that survives ``conf``/``iou``, unrestricted, for genuinely multi-organoid
+    that survives ``conf``/``iou``, unrestricted, for multi-organoid
     wells.
+
     """
     if torch is None:
         raise ImportError(
-            "run_orgline_segmentation requires OrgLine's own environment (torch, "
-            "the vendored Ultralytics-style detector, SAM2), which is not importable "
-            "from the current interpreter. Run this with "
-            "Organotchi/environments/orgline_venv/bin/python "
-            "-- see ../environments/README.md for how to build it."
+            "run_orgline_segmentation requires OrgLine's own dependencies (torch, "
+            "the vendored Ultralytics-style detector, SAM2), which are not importable "
+            "from the current interpreter. Install the 'orgline' extra into this "
+            "environment (pip install -e \".[orgline]\") -- see "
+            "../environments/README.md for the full setup."
         )
 
     organoid_mode = str(organoid_mode).lower()
@@ -2095,10 +2183,6 @@ def run_orgline_segmentation(
     sam2_checkpoint = os.path.abspath(sam2_checkpoint or opj(orgline_repo, "checkpoints", "sam2_hiera_tiny.pt"))
     checkpoints_dir = os.path.dirname(sam2_checkpoint)
 
-    # Resolve every one of our own paths to absolute BEFORE changing cwd --
-    # OrgLine's architecture code hard-codes the SAM2 checkpoint path
-    # ("sam2_hiera_tiny.pt", no directory) as relative to cwd with no
-    # override parameter, so building the model requires cwd == orgline_repo.
     base_dir = os.path.abspath(base_dir)
 
     cache_key = (orgline_repo, orgdet_checkpoint, sam2_checkpoint, device)
@@ -2106,14 +2190,7 @@ def run_orgline_segmentation(
     if cached is not None:
         detector, sam2_predictor = cached
     else:
-        # ~30s of pure model-build overhead (measured: ~28s detector + ~3s
-        # SAM2), unrelated to how many images actually get processed --
-        # segmentation.py calls this once per (batch, run) pair, so a
-        # project with several batches configured for "orgline" would
-        # otherwise pay this cost again for every single batch despite
-        # every one of them using the exact same checkpoint. Cached at
-        # module level (keyed by the exact config) so it's paid once per
-        # process, not once per call.
+
         original_cwd = os.getcwd()
         os.chdir(orgline_repo)
         try:
@@ -2147,7 +2224,10 @@ def run_orgline_segmentation(
                 tile_name = os.path.splitext(os.path.basename(tile_path))[0]
                 image_context = _get_image_measurement_context(tile_name, images_per_plate)
                 try:
-                    results = detector.predict(source=tile_path, conf=conf, iou=iou, verbose=False)
+                    results = detector.predict(
+                        source=tile_path, conf=conf, iou=iou, imgsz=imgsz,
+                        agnostic_nms=agnostic_nms, verbose=False,
+                    )
                     r = results[0]
                     h, w = r.orig_shape
                     instance_mask = np.zeros((h, w), dtype=np.int32)
@@ -2194,6 +2274,8 @@ def run_orgline_segmentation(
                     "Organoid_Mode": organoid_mode,
                     "Confidence_Threshold": conf,
                     "IoU_Threshold": iou,
+                    "Image_Size": imgsz,
+                    "Agnostic_NMS": agnostic_nms,
                 })
 
                 print(
@@ -2222,6 +2304,8 @@ def run_orgline_segmentation(
                 "organoid_mode": organoid_mode,
                 "conf_threshold": conf,
                 "iou_threshold": iou,
+                "imgsz": imgsz,
+                "agnostic_nms": agnostic_nms,
                 "device": device,
                 "images_processed": len(segmentation_summary),
                 "images_failed": len(failed_images),
@@ -2234,4 +2318,201 @@ def run_orgline_segmentation(
                 [project],
                 overwrite=True,
             )
+
+
+# --- Manual mask correction (segmentation.py --correct_mask) ---------------
+#
+# Interactive, napari-based correction of one tile's already-produced mask,
+# for whichever day/batch/tile a user picks (see segmentation.py's own
+# _run_mask_correction for the day -> batch -> tile prompt chain). The
+# functions here only handle the segmentation-domain half of that feature
+# (finding/loading/editing/saving masks) -- they know nothing about
+# morphology metrics, keeping this module's existing one-directional
+# dependency (utils_morphology.py imports from here, never the reverse) at
+# zero even for this new feature. segmentation.py itself is responsible for
+# re-extracting morphology metrics once a mask has actually been corrected.
+
+
+def _resolve_correctable_masks_dir(base_dir, project_dir, day, batch):
+    """The directory whose masks are actually authoritative for downstream
+    morphology metrics -- ``inference_filtered_npy`` if it exists and has
+    content, else ``inference_npy``. Mirrors morphology.py's own
+    ``_masks_dir`` exactly (duplicated rather than imported, to keep this
+    module from depending on morphology.py at all -- see the module note
+    above), so a correction made here is the one that will actually take
+    effect the next time morphology extraction runs."""
+    processed_dir = opj(base_dir, project_dir, "processed_data", f"Day {day}", batch)
+    masks_dir = opj(processed_dir, "inference_filtered_npy")
+    if not os.path.isdir(masks_dir) or not os.listdir(masks_dir):
+        masks_dir = opj(processed_dir, "inference_npy")
+    return masks_dir if os.path.isdir(masks_dir) else None
+
+
+def list_correctable_tiles(base_dir, project_dir, day, batch):
+    """Tile IDs (e.g. "Tile000001") with an existing, correctable mask for
+    this day/batch -- already-stitched IDs, same as everywhere else in this
+    pipeline, since that's what the mask files themselves are keyed by
+    regardless of whether stitching happened upstream. Empty list (not an
+    error) if this day/batch hasn't been segmented yet."""
+    masks_dir = _resolve_correctable_masks_dir(base_dir, project_dir, day, batch)
+    if masks_dir is None:
+        return []
+    return sorted(
+        os.path.splitext(f)[0] for f in os.listdir(masks_dir) if f.lower().endswith(".npy")
+    )
+
+
+def _find_reference_image_for_tile(base_dir, project_dir, day, batch, tile_name, mask_shape):
+    """Best-effort raw/prepared image to display alongside the mask being
+    corrected -- tried in the same priority order the segmentation methods
+    themselves resolve a tile's input image from (stitched, then raw,
+    then -- dl only -- its own tif->jpg conversion), preferring whichever
+    candidate's own pixel dimensions actually match the mask (the only
+    guarantee that it's the right image, since dl runs through a separate
+    converted_jpg copy rather than the raw file directly). Returns None if
+    nothing is found at all -- the caller still lets editing proceed without
+    a reference image rather than failing outright."""
+    raw_data_dir = opj(base_dir, project_dir, "raw_data", f"Day {day}", batch)
+    processed_dir = opj(base_dir, project_dir, "processed_data", f"Day {day}", batch)
+    candidates = []
+    for directory in (opj(raw_data_dir, "stitched"), raw_data_dir, opj(processed_dir, "converted_jpg")):
+        for extension in (".jpg", ".jpeg", ".tif", ".tiff", ".png"):
+            candidates.append(opj(directory, f"{tile_name}{extension}"))
+
+    existing = [path for path in candidates if os.path.exists(path)]
+    target_hw = tuple(mask_shape[:2])
+    for path in existing:
+        try:
+            with Image.open(path) as img:
+                if img.size[::-1] == target_hw:
+                    return path
+        except Exception:
+            continue
+    return existing[0] if existing else None
+
+
+def open_mask_correction_viewer(base_dir, project_dir, day, batch, tile_name):
+    """Launch napari with the tile's raw/prepared image (if one could be
+    found -- see ``_find_reference_image_for_tile``) and its current mask,
+    re-labeled into per-organoid instances the same way morphology
+    extraction itself derives instances (``measure.label`` on the binary
+    mask at ``LABEL_CONNECTIVITY`` -- see ``utils_morphology.py``'s
+    ``extract_organoid_morphology_metrics``), so whatever gets edited here
+    is exactly what the next morphology extraction run will treat as "the
+    objects" in this tile.
+
+    Blocks (``napari.run()``) until the napari window is closed, then
+    returns ``(edited_labels, masks_dir, tile_name)`` -- the caller decides
+    what to do with the result (``save_corrected_mask`` below), so this
+    function has no side effects of its own beyond opening the viewer.
+
+    Requires napari plus a working Qt backend (PyQt5/PySide2/PyQt6/PySide6)
+    and, on Linux, the system ``libfontconfig`` -- none of which any other
+    part of this pipeline needs, so they're only imported here, on first
+    use of this one feature, not at module load time. Also requires an
+    actual display; raises the same ``ImportError`` in a headless
+    environment as a missing napari install, since there is nothing useful
+    this function can do in either case.
+    """
+    try:
+        import napari
+    except ImportError as exc:
+        raise ImportError(
+            "Mask correction requires napari plus a Qt backend (e.g. "
+            "`pip install napari[pyqt5]`) and a real display -- not available "
+            "in a headless/CI environment."
+        ) from exc
+
+    masks_dir = _resolve_correctable_masks_dir(base_dir, project_dir, day, batch)
+    if masks_dir is None:
+        raise FileNotFoundError(f"No masks found for {batch}, Day {day} -- run segmentation.py first.")
+
+    mask_path = opj(masks_dir, f"{tile_name}.npy")
+    if not os.path.exists(mask_path):
+        raise FileNotFoundError(f"No mask found for tile '{tile_name}' at {mask_path}.")
+
+    binary_mask = np.load(mask_path) > 0
+    initial_labels = measure.label(binary_mask, connectivity=LABEL_CONNECTIVITY)
+
+    reference_image_path = _find_reference_image_for_tile(
+        base_dir, project_dir, day, batch, tile_name, initial_labels.shape,
+    )
+
+    try:
+        viewer = napari.Viewer(title=f"Correct mask -- {batch} / Day {day} / {tile_name}")
+    except Exception as exc:
+        # Broad on purpose: napari itself imports successfully even with no working
+        # Qt backend or display -- the actual failure (missing PyQt5/PySide2/
+        # PyQt6/PySide6, a missing system lib like libfontconfig, no X
+        # server/display) only surfaces here, as one of several different
+        # exception types depending on which piece is missing. All of them
+        # mean the same thing for this feature: no usable desktop session.
+        raise RuntimeError(
+            "Could not open a napari window. This needs a Qt backend "
+            "(`pip install napari[pyqt5]`, or another Qt binding) and a real "
+            "display -- not available in a headless/CI/SSH-without-X environment."
+        ) from exc
+
+    if reference_image_path:
+        with Image.open(reference_image_path) as img:
+            viewer.add_image(np.array(img.convert("RGB")), name="raw image")
+    else:
+        print(f"⚠️  No matching raw/stitched image found for {tile_name} -- editing mask with no reference image.")
+    labels_layer = viewer.add_labels(initial_labels, name="organoid instances")
+
+    print(
+        "Napari opened -- edit organoid instances directly with the Labels layer's own "
+        "tools (paint a new instance, erase, split, merge), then close the window to save."
+    )
+    napari.run()
+
+    return labels_layer.data, masks_dir, tile_name
+
+
+def save_corrected_mask(base_dir, project_dir, day, batch, tile_name, masks_dir, edited_labels):
+    """Write an edited instance-labels array back to disk: the binary mask
+    file this tile's morphology metrics are actually computed from
+    (``masks_dir``, resolved by ``open_mask_correction_viewer`` as
+    "filtered if present, else raw"), ``inference_labels_npy`` (kept in
+    sync for visual QC even for methods -- classical -- that don't normally
+    write one at all), and the matching binary jpg/tif mirrors. Also
+    appends a ``manual_mask_correction`` record to that day/batch's
+    ``segmentation_run_manifest.json`` so a corrected tile stays traceable
+    rather than silently looking like an ordinary pipeline output.
+
+    Deliberately does NOT touch the *other* binary mask file (``inference_npy``
+    when ``masks_dir`` is the filtered one) -- that file is the raw model
+    output before filtering, a historical record this correction isn't
+    meant to rewrite; only the file actually used downstream is corrected.
+
+    Returns the corrected organoid count (for the caller to print/log).
+    """
+    edited_labels = edited_labels.astype(np.int32)
+    binary_mask = ((edited_labels > 0).astype(np.uint8)) * 255
+    n_objects = int(edited_labels.max())
+
+    np.save(opj(masks_dir, f"{tile_name}.npy"), binary_mask)
+
+    processed_dir = opj(base_dir, project_dir, "processed_data", f"Day {day}", batch)
+    labels_dir = opj(processed_dir, "inference_labels_npy")
+    os.makedirs(labels_dir, exist_ok=True)
+    np.save(opj(labels_dir, f"{tile_name}.npy"), edited_labels.astype(np.uint16))
+
+    is_filtered = os.path.basename(masks_dir) == "inference_filtered_npy"
+    jpg_dir = opj(processed_dir, "inference_filtered_jpg" if is_filtered else "inference_jpg")
+    tif_dir = opj(processed_dir, "inference_tif")
+    os.makedirs(jpg_dir, exist_ok=True)
+    os.makedirs(tif_dir, exist_ok=True)
+    mask_img = Image.fromarray(binary_mask)
+    mask_img.save(opj(jpg_dir, f"{tile_name}.jpg"))
+    mask_img.save(opj(tif_dir, f"{tile_name}.tif"))
+
+    _write_run_manifest(processed_dir, "manual_mask_correction", {
+        "tile": tile_name,
+        "masks_dir": masks_dir,
+        "object_count_after_correction": n_objects,
+    })
+
+    print(f"Saved corrected mask for {tile_name} ({n_objects} organoid(s)) to {masks_dir}.")
+    return n_objects
 

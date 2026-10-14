@@ -6,16 +6,11 @@ import glob
 
 # Default local clone location for OrgLine ("orgline" segmentation method) --
 # see ../environments/README.md for how this clone + its venv are set up.
-# (This used to default into ../benchmarking/environments/OrgLine, back when
-# benchmarking/ lived in this same repo -- moved to ../environments/ when
-# benchmarking/ and manuscript/ split into their own Organotchi-manuscript
-# repo, since OrgLine support is a tool capability, not benchmark-specific.)
-# A project doesn't need to repeat this path unless its clone actually lives
+# A project doesn't need to repeat this path unless its clone lives
 # somewhere else.
 _DEFAULT_ORGLINE_REPO = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "environments", "OrgLine"
 ))
-
 
 def _reject_duplicate_json_keys(json_filename):
     """Return an object_pairs_hook that rejects duplicate keys a plain
@@ -76,7 +71,7 @@ def discover_plotting_metadata_files(project_dir):
     """Every plotting_metadata*.json file for ``project_dir``, as a sorted
     list of (suffix, path) pairs -- one entry per file a project keeps for
     a distinct comparison (e.g. plotting_metadata_mtesr_vs_ctrl.json /
-    plotting_metadata_e10_vs_e11.json for 2026_04_30-Zeynep-CP), run one
+    plotting_metadata_e10_vs_e11.json for one project), run one
     after another by plot.py's driver loop, each into its own
     plots_<suffix>/ directory (see configure_plots_dirname in
     utils_plot.py) rather than overwriting a single shared plots/.
@@ -106,9 +101,6 @@ def discover_plotting_metadata_files(project_dir):
         if "copy" not in os.path.basename(path).lower()
     )
     if not candidates:
-        # No file at all yet -- return the default path anyway so the
-        # caller's "file not found" handling (a clear warning, not a crash)
-        # still runs exactly as it did before this function existed.
         return [(None, os.path.join(project_path, "plotting_metadata.json"))]
 
     return [(_plotting_metadata_suffix(path), path) for path in candidates]
@@ -129,12 +121,64 @@ def load_plotting_metadata_file(path):
 
     return _normalize_plotting_metadata(data)
 
-
 # Defaults used for any key a project's plotting_metadata.json omits --
 # mirrors _normalize_segmentation_run's per-key defaulting for the
 # segmentation side, so a minimal plotting_metadata.json is still runnable.
 DEFAULT_PLOTTING_METADATA = {
     "batches_complete_info": [],
+    # Figure styling -- every key below is read once per run by
+    # utils_plot.py's configure_plot_style (see its own docstring and
+    # _STYLE_SETTINGS) and can be set or omitted independently; an omitted
+    # key keeps the default shown here.
+    #   fig_width_in / fig_height_in: single-panel figure size, in inches.
+    #   max_panel_cols: most subplot columns a multi-panel grid figure (one
+    #     panel per day/window) uses before wrapping into another row.
+    #   color_palette: any name seaborn.color_palette accepts (e.g. "husl",
+    #     "Set2", "tab10").
+    #   file_format: any extension matplotlib's savefig supports (e.g.
+    #     "png", "svg", "pdf").
+    #   legend_position: "below" (horizontally centered under the figure) or
+    #     "right" (vertically centered to its right) -- every figure's
+    #     legend is drawn outside the plot area at this one shared position,
+    #     never inside it.
+    #   legend_reserve_in: vertical space (inches) a grid figure reserves
+    #     below its axes for a "below"-position legend; unused (and cropped
+    #     away) when legend_position is "right".
+    #   line_width / marker_size / errorbar_capsize: shared by every mean
+    #     +/- error trend-line figure.
+    #   title_fontsize / axis_label_fontsize / tick_label_fontsize /
+    #     legend_fontsize: global defaults (matplotlib rcParams) for every
+    #     figure's own title, axis labels, tick labels, and legend text.
+    #   grid_title_fontsize: per-panel "Day N"/window title in a grid figure.
+    #   stats_fontsize: significance-star/Hedges' g annotation text.
+    #   annotation_fontsize: small gray vertical-line annotations
+    #     (transition days, developmental-window starts).
+    #   cluster_label_fontsize: UMAP per-cluster "C<id>" label, drawn
+    #     directly on the scatter.
+    #   heatmap_annot_fontsize: cell text in the effect-size/correlation heatmaps.
+    #   compact_tick_fontsize: crowded/multi-line tick labels that need to
+    #     read smaller than tick_label_fontsize (e.g. expected-vs-detected
+    #     organoid count QC bars, one per batch/day).
+    "fig_width_in": 10,
+    "fig_height_in": 6,
+    "max_panel_cols": 3,
+    "color_palette": "husl",
+    "file_format": "png",
+    "legend_position": "below",
+    "legend_reserve_in": 0.6,
+    "line_width": 1.5,
+    "marker_size": 4,
+    "errorbar_capsize": 4,
+    "title_fontsize": 12,
+    "axis_label_fontsize": 12,
+    "tick_label_fontsize": 10,
+    "legend_fontsize": 10,
+    "grid_title_fontsize": 10,
+    "stats_fontsize": 6,
+    "annotation_fontsize": 10,
+    "cluster_label_fontsize": 8,
+    "heatmap_annot_fontsize": 7,
+    "compact_tick_fontsize": 8,
     "features": [
         'Area_um2', 'Diameter_um', 'Perimeter_um',
         'Feret_Diameter_Max_um', 'Aspect_Ratio', 'Circularity',
@@ -146,30 +190,39 @@ DEFAULT_PLOTTING_METADATA = {
     # Days to run plot_pca_grid_by_group and plot_umap_clusters on -- kept
     # separate from days_for_group_comparison (used for the boxplot/grid-
     # scatter group comparisons instead) since the two analyses serve
-    # different purposes and a project may well want a different day
-    # selection for each. Empty by default (no silent fallback to
-    # days_for_group_comparison): set this explicitly per project, or PCA/
+    # different purposes and a project may need a different day selection
+    # for each. Empty by default: set this explicitly per project, or PCA/
     # UMAP won't run.
     "pca_umap_days": [],
+    # Accepted values: "object" (per-organoid rows) and/or "well" (per-well
+    # aggregates) -- a list, so both levels can be plotted. Default
+    # ["object"].
     "plot_aggregation_levels": ["object"],
     "outlier_detection": {
+        # Accepted "method" values: "iqr" (default, Tukey fences via
+        # iqr_multiplier), "mean_sd" (mean +/- std_multiplier*std), or
+        # "percentile". ("mad" appears elsewhere in the codebase as a
+        # deprecated alias that falls back to "iqr" with a warning -- avoid
+        # it in new metadata.)
         "method": "iqr",
         "iqr_multiplier": 1.5,
         "std_multiplier": 3.0,
         "manual_std_thresholds": None,
+        # Accepted values: "object" or "well" -- which level outlier
+        # exclusion itself is computed/applied at (independent of
+        # plot_aggregation_levels above).
         "aggregation_level": "object",
     },
     # Minimum number of independent wells required in EACH group before a
     # pairwise statistical comparison is attempted (Welch's t-test/Hedges'
     # g, everywhere in utils_plot.py that compares groups on
     # well-level means). Below this, the comparison is skipped and
-    # reported as such (a "Skipped_Insufficient_N" row) rather than either
-    # silently vanishing or running on a handful of wells that can't
-    # support a meaningful test. 3 is a practical floor, not a statistical
+    # reported as such (a "Skipped_Insufficient_N" row).
+    # 3 is a practical floor, not a statistical
     # guarantee of power -- raise it for projects that can afford to be
     # stricter, or lower it (a single well per group still lets Welch's
     # t-test run, since _hedges_g/ttest_ind only require n>=2) if a
-    # project's design genuinely has no more replicates to give.
+    # project's design has no more replicates to give.
     "min_wells_for_stats": 3,
     # {"<day>": "<label>"} -- days where the imaging/plating regime itself
     # changed (e.g. 96-well/single-organoid -> 6-well/multiple-organoids-
@@ -177,10 +230,10 @@ DEFAULT_PLOTTING_METADATA = {
     # line plot (plot_feature_over_time, plot_variability_and_outliers's
     # CV/outlier-percentage plots, plot_well_organoid_counts_over_time,
     # plot_well_metric_over_time, plot_feature_over_time_by_window,
-    # analyze_growth_trajectories's trajectory plot) so a reader isn't left
-    # to guess why a metric jumps/shifts at that day. Empty by default (no
-    # markers) -- day keys are read as given (str or int; compared against
-    # the Day column as int) and don't need to be contiguous or ordered.
+    # analyze_growth_trajectories's trajectory plot) to mark why a metric
+    # jumps/shifts at that day. Empty by default (no markers) -- day keys
+    # are read as given (str or int; compared against the Day column as
+    # int) and don't need to be contiguous or ordered.
     "transition_days": {},
     "well_metric_plots": [],
     # Error bar shown on every mean+/-error line plot in utils_plot.py
@@ -199,7 +252,7 @@ DEFAULT_PLOTTING_METADATA = {
     # analyze_growth_trajectories runs once per entry here (only
     # Organoid_Mode == "single" rows -- i.e. one physical well imaged over
     # the whole timecourse -- contribute; see that function's docstring).
-    # Area_um2 is a sensible default for every project; add more (e.g. a
+    # Area_um2 is included by default for every project; add more (e.g. a
     # light-dark ratio column) per project as needed.
     "growth_rate_features": [
         {"feature": "Area_um2", "metric_label": "Area (um^2)"},
@@ -283,43 +336,39 @@ def run_project_logic(project_dir):
     plotting_metadata = _normalize_plotting_metadata(plotting_data)
     batches_complete_info = plotting_metadata["batches_complete_info"]
 
-# Define the available projects
-AVAILABLE_PROJECT_DIRS = [
-    '2026_06_09-PCH2_CB',
-    '2025_03_05-Organoid-Segmentation',
-    '2025_03_05-Theresa-SmallScale-Trial/AB108-AB112',
-    '2025_03_05-Theresa-SmallScale-Trial/SB60-SB64',
-    '2025_03_05-Theresa-SmallScale-Trial/QB01-QB05',
-    '6_WNT_treatment/AB115-AB117',
-    'Francesco',
-    'Isabel',
-    'Zeynep',
-    'Kenzie',
-    'Dasha',
-    '2025_12_24-Francesco',
-    '6_WNT_treatment/WNT_ligands_treatment',
-    '2026_04_30-Zeynep-CP',
-    'AnnaRaic',
-    '2026_06_08-Dasha-DMA',
-    'Erin',
-    '2026_06_17_Dasha',
-    '2026_06_25_Dasha',
-    '2026_06_25_Isabel_PB02_PB03',
-    '2026-07-21_Dasha',
-    '2026_07_13_Isabel_QB24_QB25',
-    '2026_07_13_Isabel_QB26',
-    'Training-Dataset-Lancaster',
-    '2026_04_30-Zeynep-CP-comparison'
-]
+# Per-lab values (available project directories, best segmentation
+# checkpoint, data root) live in local_config.json, gitignored so this repo
+# stays free of lab-internal paths/names -- see local_config.example.json
+# for the expected shape. Falls back to that example file, with a warning,
+# until local_config.json is created.
+_LOCAL_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+_LOCAL_CONFIG_PATH = os.path.join(_LOCAL_CONFIG_DIR, "local_config.json")
+_LOCAL_CONFIG_EXAMPLE_PATH = os.path.join(_LOCAL_CONFIG_DIR, "local_config.example.json")
 
-# Shared config
-checkpoint = 'Training-Results/work_dirs/split-0/iter_144000.pth'
-base_dir = '../../../AGMayer/Lizia/Organoid_Segmentation'
+
+def _load_local_config():
+    path = _LOCAL_CONFIG_PATH
+    if not os.path.exists(path):
+        print(
+            f"local_config.json not found at {_LOCAL_CONFIG_PATH}; using the "
+            f"placeholder values in {_LOCAL_CONFIG_EXAMPLE_PATH} instead. Copy "
+            "that file to local_config.json and fill in your own project "
+            "directories, checkpoint path, and base_dir."
+        )
+        path = _LOCAL_CONFIG_EXAMPLE_PATH
+    with open(path, 'r') as f:
+        return json.load(f)
+
+
+_local_config = _load_local_config()
+AVAILABLE_PROJECT_DIRS = _local_config["available_project_dirs"]
+# Absolute path, not resolved relative to base_dir/project_dir anywhere
+# (utils_segmentation.run_deep_learning_segmentation uses it as-is). See
+# local_config.json for which checkpoint this points to and why.
+checkpoint = _local_config["checkpoint"]
+base_dir = _local_config["base_dir"]
 
 pixel_to_micron = {
-    #"96_well": {"x": 0.8882, "y": 0.8873}, #considering last calibration october/november 2025
-    #"24_well": {"x": 2.8422*1.2, "y": 2.8394*1.2}  #1.97 correction to correspond to measure on day of change of plates
-    #"24_well": {"x": 2.8422, "y": 2.8394},  #considering last calibration october/november 2025
     "5x_leica": {"x": 0.154, "y": 0.154},
     "4x": {"x": 0.8882, "y": 0.8873},
     "1.25x": {"x": 2.8422, "y": 2.8394},
@@ -339,7 +388,13 @@ SEGMENTATION_RUN_KEYS = (
 
 
 def normalize_tile_grid(tile_grid, default=(1, 1)):
-    """Normalize tile-grid metadata such as '2x2', [2, 2], or {'rows': 2, 'cols': 2}."""
+    """Normalize tile-grid metadata such as '2x2', [2, 2], or {'rows': 2, 'cols': 2}.
+
+    Accepted forms: a string "RxC" (or "R by C", case-insensitive, e.g.
+    "5x5"); a dict with rows/cols under any of "rows"/"height"/"y" and
+    "cols"/"columns"/"width"/"x"; a 2-element list/tuple [rows, cols]; or a
+    single int for a square grid (e.g. 5 -> 5x5). Anything else (including
+    None) falls back to ``default``."""
     if tile_grid is None:
         return default
 
@@ -365,7 +420,11 @@ def normalize_tile_grid(tile_grid, default=(1, 1)):
 
 
 def normalize_organoid_mode(value, default="single"):
-    """Return 'single' or 'multiple' from flexible organoid-per-image metadata."""
+    """Return 'single' or 'multiple' from flexible organoid-per-image metadata.
+
+    Accepted input values (case-insensitive): "multiple"/"multi"/"many"/
+    "true"/"yes" -> "multiple"; "single"/"individual"/"one"/"false"/"no"
+    -> "single". Anything else (including None) falls back to ``default``."""
     if value is None:
         return default
 
@@ -388,6 +447,13 @@ def _get_explicit_segmentation_runs(batch):
 
 
 def _normalize_segmentation_run(batch, run_config, default_name=None):
+    # Accepted "method" values (aliases: "model", "segmentation_model"):
+    # "dl" (deep learning -- also accepts "deep_learning"/"deeplearning"/
+    # "neural"/"nn"), "cl" (classical threshold+contour -- also accepts
+    # "classical"/"classic"/"threshold"/"traditional"), "orgline"
+    # (detector-guided SAM2 prompting -- also accepts "org_line"/"orgdet"/
+    # "orgline_tiny"). Default "cl". Anything else is left as-is (lowercased)
+    # and will fail downstream in segmentation.py's method dispatch.
     method = run_config.get(
         "method",
         run_config.get("model", run_config.get("segmentation_model", "cl"))
@@ -407,10 +473,21 @@ def _normalize_segmentation_run(batch, run_config, default_name=None):
         default=default_grid,
     )
 
+    # "magnification" (alias "amplification") is informational only -- an
+    # arbitrary string, not validated against a fixed list; it's the
+    # *_key below (or an explicit "pixel_to_micron" override) that drives
+    # the um/pixel conversion. Default "4x" for method=="dl" else
+    # "1.25x".
     magnification = str(run_config.get(
         "magnification",
         run_config.get("amplification", "4x" if method == "dl" else "1.25x")
     ))
+    # "pixel_to_micron_key" (alias "pixel_size_key") must be one of
+    # pixel_to_micron's own keys (module-level dict below): "5x_leica",
+    # "4x", "1.25x", "96_well", "24_well" -- or pass an explicit
+    # "pixel_to_micron": {"x": .., "y": ..} override instead (takes
+    # precedence over the key; see get_pixel_to_micron_for_run). Default
+    # "96_well" for method=="dl" else "24_well".
     pixel_key = run_config.get(
         "pixel_to_micron_key",
         run_config.get("pixel_size_key", "96_well" if method == "dl" else "24_well")
@@ -447,8 +524,8 @@ def _normalize_segmentation_run(batch, run_config, default_name=None):
     # unchanged -- this tuning was scoped to the DL post-filter only.
     default_min_area = 10000 if method == "dl" else 30000
     default_min_circularity = 0.1 if method == "dl" else 0.2
-    # DL's post-filter upper area bound is off by default (organoids legitimately
-    # grow larger over the developmental timeline; an unconditional upper bound
+    # DL's post-filter upper area bound is off by default (organoids grow
+    # larger over the developmental timeline; an unconditional upper bound
     # risked discarding genuine late-timepoint organoids) -- the classical
     # pipeline's own contour filter keeps its previous default unchanged.
     default_max_area = None if method == "dl" else 3000000
@@ -466,18 +543,36 @@ def _normalize_segmentation_run(batch, run_config, default_name=None):
         "organoid_mode": organoid_mode,
         "checkpoint": run_config.get("checkpoint", checkpoint),
         "model_config_path": run_config.get("model_config_path"),
+        # "device" is an unrestricted passthrough string (whatever
+        # torch.device()/model.to() accepts on this machine -- typically
+        # "cpu", "cuda", or "cuda:N"), not validated against a fixed list.
+        # Default "cpu".
         "device": run_config.get("device", "cpu"),
         # DL only: whether to run the post-inference area/circularity filter
         # pass (apply_filtering_to_segmentations) at all.
         "filter_masks": bool(run_config.get("filter_masks", True)),
         "crop_days": run_config.get("crop_days", ["0"] if method == "dl" else []),
         "stitch": run_config.get("stitch", method in {"cl", "orgline"} and tile_grid != (1, 1)),
+        # Accepted "tile_order" values (see utils_segmentation.py's
+        # _get_grid_position): "serpentine"/"snake"/"d_order" (row-major,
+        # alternating direction each row -- the default), "row"/"row_major"
+        # (row-major, same direction every row), "column"/"column_major"
+        # (column-major, same direction every column), "column_snake"/
+        # "vertical_snake" (column-major, alternating direction each
+        # column). Default "serpentine".
         "tile_order": run_config.get("tile_order", "serpentine"),
         "overlap_x": run_config.get("overlap_x", 32),
         "overlap_y": run_config.get("overlap_y", 31),
         "stitched_images_per_batch": run_config.get("stitched_images_per_batch", images_per_plate),
         "images_per_plate": images_per_plate,
+        # "threshold": an int 0-255 (fixed binarization cutoff), or the
+        # literal string "otsu" to compute the cutoff fresh per image via
+        # Otsu's method (see utils_segmentation.py's
+        # _create_classical_binary_mask). Classical/OrgLine only. Default 128.
         "threshold": run_config.get("threshold", 128),
+        # Accepted "foreground_polarity" values (alias "foreground"): "dark"
+        # (organoid darker than background -- brightfield default) or
+        # "light" (organoid brighter than background).
         "foreground_polarity": run_config.get("foreground_polarity", run_config.get("foreground", "dark")),
         "max_area": run_config.get("max_area", default_max_area),
         "min_area": run_config.get("min_area", default_min_area),
@@ -502,7 +597,7 @@ def _normalize_segmentation_run(batch, run_config, default_name=None):
         # fragment of it. An int is a square kernel size in pixels (e.g.
         # 40); None/0 (default) disables this. Too large a kernel risks
         # bridging the gap *between* two separate, adjacent organoids --
-        # keep it just big enough for the gaps actually seen (see
+        # keep it just big enough for the gaps seen (see
         # fit_experiment_data.py --sweep close_kernel_size). See
         # utils_segmentation.py's _apply_morphological_closing.
         "close_kernel_size": run_config.get("close_kernel_size"),
@@ -564,17 +659,23 @@ def _normalize_segmentation_run(batch, run_config, default_name=None):
         # OrgLine only: local clone of https://github.com/ucas-dx/OrgLine and
         # its two "tiny"/low-VRAM checkpoints (orgdet_tiny.pt + sam2_hiera_tiny.pt,
         # both under <orgline_repo>/checkpoints/ by convention -- see
-        # ../environments/README.md for how they're obtained) --
-        # the exact configuration benchmarked in the Organotchi-manuscript
-        # repo's benchmarking/, where OrgLine was the strongest tool across
-        # every tissue tried. Must be run with
-        # the orgline_venv interpreter (see run_orgline_segmentation's
-        # docstring) -- OrgLine's dependencies are isolated from mmsegmentation's.
+        # ../environments/README.md for how they're obtained)
         "orgline_repo": run_config.get("orgline_repo", _DEFAULT_ORGLINE_REPO),
         "orgdet_checkpoint": run_config.get("orgdet_checkpoint"),
         "sam2_checkpoint": run_config.get("sam2_checkpoint"),
         "orgline_conf": run_config.get("orgline_conf", 0.2),
         "orgline_iou": run_config.get("orgline_iou", 0.7),
+        # Side length OrgLine's detector resizes each image to internally
+        # before inference (its own upstream default, orgline/cfg/default.yaml).
+        "orgline_imgsz": run_config.get("orgline_imgsz", 640),
+        # Also OrgLine's own upstream default. Makes NMS suppress
+        # overlapping boxes regardless of OrgLine's internal 18-class output
+        # (see orgline_bridge.py's bug #1) rather than only within the same
+        # predicted class -- since every detection here is treated as "an
+        # organoid" regardless of that class id, leaving this False can let
+        # two heavily-overlapping boxes for the same organoid (different
+        # predicted classes) both survive.
+        "orgline_agnostic_nms": bool(run_config.get("orgline_agnostic_nms", False)),
     }
 
 
@@ -584,6 +685,13 @@ def get_segmentation_runs(batch):
 
     New metadata can use a ``segmentation_runs`` list. Legacy metadata with
     ``days_96`` and ``days_24`` is still supported.
+
+    ``expected_organoid_counts`` (``{"<day>": count}``) is not part of
+    the dict this function/`_normalize_segmentation_run` returns -- it's read
+    directly off the raw batch/run config by utils_plot.py's
+    check_expected_organoid_counts, merged batch-level-then-run-level (a run
+    entry overrides its batch's value for the same day). Accepted at both
+    levels in segmentation_metadata.json.
     """
     explicit_runs = _get_explicit_segmentation_runs(batch)
     if explicit_runs:

@@ -1,4 +1,4 @@
-Requested folder structure for Organotchi case study
+Folder structure for Organotchi
 Please organize the organoid images using the following folder structure:
 raw_data/
     Day <day_number>/
@@ -34,10 +34,3 @@ raw_data/
 Important notes
 The batch or condition names can be chosen by you, but please keep them consistent across time points. For example, if you use Control and Treatment at Day 0, please use the same names at later time points.
 The organoid images can be provided in either .jpg or .tif format.
-Please include a .txt file inside the folder you send me, or alternatively provide the same information by email, with the following details:
-1.	Description of each batch or condition
-Please explain what each batch or condition corresponds to, for example different cell lines, treatments, protocols, experimental batches, or other relevant experimental variables.
-2.	Details of the experimental conditions
-If the folders correspond to treatments, please specify the type of treatment, concentration, duration, or any other relevant information. If they correspond to different protocols or cell lines, please briefly describe them.
-3.	Available time points and image numbers
-Please include as many time points and as many tiles/individual organoid images per batch or condition as possible. This will improve the robustness of the longitudinal morphological characterization.

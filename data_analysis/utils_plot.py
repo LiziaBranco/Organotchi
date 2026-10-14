@@ -20,36 +20,18 @@ import matplotlib.lines as mlines
 
 from experiment_info import *
 
-plt.rcParams.update({
-    "axes.titlesize": 12,           # Title font size
-    "axes.labelsize": 12,           # X and Y label font size
-    "xtick.labelsize": 10,          # X-axis tick labels font size
-    "ytick.labelsize": 10,          # Y-axis tick labels font size
-    "legend.fontsize": 10,          # Legend font size
-    "axes.spines.top": False,       # Remove top spine
-    "axes.spines.right": False,      # Remove right spine
-    "axes.spines.bottom": False,       # Remove top spine
-    "axes.spines.left": False      # Remove right spine
-})
-
 # Output directory name every plotting function writes into (under
 # base_dir/project_dir/), set once per run via configure_plots_dirname.
 # "plots" by default -- unchanged for every project with a single
 # plotting_metadata.json. plot.py's driver loop overrides this to
 # "plots_<suffix>" once per discovered plotting_metadata_<suffix>.json
-# variant (see experiment_info.py's discover_plotting_metadata_files), so
-# e.g. 2026_04_30-Zeynep-CP's two comparisons land in
-# plots_mtesr_vs_ctrl/ and plots_e10_vs_e11/ instead of overwriting a
-# single shared plots/. Defined here, before this module's own first use
-# of it below, rather than alongside _OUTLIER_REMOVAL further down.
+# variant (see experiment_info.py's discover_plotting_metadata_files).
 _PLOTS_DIRNAME = {"name": "plots"}
 
 
 def configure_plots_dirname(name=None):
     """Set the output directory name for every subsequent plotting call in
-    this process. None (or "plots") resets to the default -- call this
-    between variants in plot.py's driver loop so one variant's
-    override never leaks into the next."""
+    this process. None (or "plots") resets to the default."""
     _PLOTS_DIRNAME["name"] = name or "plots"
 
 
@@ -64,37 +46,134 @@ plot_dir = _plots_root(base_dir, project_dir)
 os.makedirs(plot_dir, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Standard figure sizing, calibrated to
-# AnnaRaic/Area_um2_expansion_rate_boxplots_by_window.png's actual rendered
-# size (~6.2in wide x ~3.7in tall, a 2-window/one-row figure with a bottom
-# legend). STANDARD_FIG_WIDTH_IN is that figure's total width, shared
-# across up to MAX_PANEL_COLS panels in a row rather than multiplied per
-# column -- that's what "grid scatterplots have a maximum of two subplots
-# side by side" means concretely: two panels split one standard figure's
-# width between them, exactly as in the calibration figure. Additional
-# panels beyond MAX_PANEL_COLS wrap into more rows instead of growing
-# width. STANDARD_FIG_HEIGHT_IN is the axes-only height for ONE row of
-# panels; a figure's legend (drawn below the axes, not inline) adds
-# LEGEND_RESERVE_IN on top of that separately at each call site -- the
-# calibration figure's own ~3.7in total already IS one row (2.5in) plus
-# its own ~1.2in legend margin, not the "2.5" restated as one lump sum.
-# Single-panel figures with an inline legend (growth trajectories, CV) use
-# STANDARD_FIG_HEIGHT_IN/STANDARD_FIG_WIDTH_IN directly. Growth rate by
-# group is the one single-panel exception: it uses a below-figure legend
-# (LEGEND_RESERVE_IN, like the multi-panel figures) and, per explicit
-# instruction, only half of STANDARD_FIG_WIDTH_IN -- matching one
-# plot_feature_grid_scatters column's width rather than the full standard
-# width the multi-day/window figures share.
-STANDARD_FIG_WIDTH_IN = 5
-STANDARD_FIG_HEIGHT_IN = 3
-MAX_PANEL_COLS = 3
-stats_fontsize = 6
+# Every figure-styling knob in this module -- sizing, line/marker/error-bar
+# styling, legend placement, and every font size -- is driven by one of the
+# module-level globals set here, and all of them can be overridden per
+# project from plotting_metadata.json via configure_plot_style, called once
+# near the start of plot.py's run_pipeline (see that function's own
+# docstring for the full key list). A project's plotting_metadata.json can
+# set any subset of these keys; anything it omits keeps the default below.
+#
+# STANDARD_FIG_WIDTH_IN/STANDARD_FIG_HEIGHT_IN size every single-panel
+# figure directly. Multi-panel grid figures (one panel per day/window) and
+# the PCA/UMAP embedding plots instead size each panel via
+# _grid_panel_size_in below, sharing STANDARD_FIG_WIDTH_IN across up to
+# MAX_PANEL_COLS columns -- additional panels wrap into more rows instead of
+# growing width.
+#
+# (plotting_metadata.json key, module-level global name, default value).
+_STYLE_SETTINGS = [
+    ("fig_width_in", "STANDARD_FIG_WIDTH_IN", 10),
+    ("fig_height_in", "STANDARD_FIG_HEIGHT_IN", 6),
+    ("max_panel_cols", "MAX_PANEL_COLS", 3),
+    ("color_palette", "COLOR_PALETTE", "husl"),
+    ("file_format", "FILE_FORMAT", "png"),
+    # "right" (vertically centered) or "below" (horizontally centered) --
+    # every figure's legend is drawn outside the plot area at this one
+    # shared position, never inside it (see _place_legend).
+    ("legend_position", "LEGEND_POSITION", "below"),
+    # Space reserved below a grid figure's axes for a "below"-position
+    # legend -- irrelevant, and simply cropped away by this module's own
+    # bbox_inches='tight' saves, when legend_position is "right".
+    ("legend_reserve_in", "LEGEND_RESERVE_IN", 0.6),
+    # Line/marker/error-bar styling, shared by every mean +/- error trend plot.
+    ("line_width", "LINE_WIDTH", 1.5),
+    ("marker_size", "MARKER_SIZE", 4),
+    ("errorbar_capsize", "ERRORBAR_CAPSIZE", 4),
+    # Font sizes. title_fontsize/axis_label_fontsize/tick_label_fontsize/
+    # legend_fontsize feed plt.rcParams (see configure_plot_style), so they
+    # apply globally without every call site passing fontsize= explicitly.
+    # The rest are for elements that intentionally read smaller/larger than
+    # that baseline.
+    ("title_fontsize", "TITLE_FONTSIZE", 12),
+    ("axis_label_fontsize", "AXIS_LABEL_FONTSIZE", 12),
+    ("tick_label_fontsize", "TICK_LABEL_FONTSIZE", 10),
+    ("legend_fontsize", "LEGEND_FONTSIZE", 10),
+    ("grid_title_fontsize", "GRID_TITLE_FONTSIZE", 10),        # Per-panel "Day N"/window title in a grid figure.
+    ("stats_fontsize", "STATS_FONTSIZE", 6),                   # Significance-star/Hedges' g annotation text.
+    ("annotation_fontsize", "ANNOTATION_FONTSIZE", 10),         # Small gray vertical-line annotations (transition days, window starts).
+    ("cluster_label_fontsize", "CLUSTER_LABEL_FONTSIZE", 8),   # UMAP per-cluster "C<id>" label, drawn on the scatter itself.
+    ("heatmap_annot_fontsize", "HEATMAP_ANNOT_FONTSIZE", 7),   # Cell text in both effect-size/correlation heatmaps.
+    ("compact_tick_fontsize", "COMPACT_TICK_FONTSIZE", 8),     # Multi-line/crowded tick labels, smaller than tick_label_fontsize.
+]
+
+for _key, _name, _default in _STYLE_SETTINGS:
+    globals()[_name] = _default
+
+
+def _apply_plot_style():
+    sns.set_style("whitegrid")
+    plt.rcParams.update({
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.spines.bottom": False,
+        "axes.spines.left": False,
+    })
+
+
+def _place_legend(fig, ax=None, handles=None, ncol=None):
+    """Draw one legend for the whole figure, outside the axes, at
+    LEGEND_POSITION ("right", vertically centered; or "below", horizontally
+    centered) -- never inside the plot area. Pass ``handles`` directly for
+    figures that already built their own (e.g. a dict of mlines.Line2D
+    dummy handles, for a grid figure where no single Axes carries the full
+    legend); otherwise pass ``ax`` and its own legend handles are used --
+    any legend seaborn already auto-drew directly on that ax (e.g.
+    sns.lineplot's own default hue legend) is removed first, so this is
+    always the only legend left on the figure."""
+    if handles is None:
+        existing = ax.get_legend()
+        if existing is not None:
+            existing.remove()
+        handles, _ = ax.get_legend_handles_labels()
+    if not handles:
+        return
+    if LEGEND_POSITION == "right":
+        fig.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
+    else:
+        fig.legend(
+            handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.1),
+            ncol=ncol if ncol is not None else min(len(handles), 3), frameon=False,
+        )
+
+
+def configure_plot_style(plotting_metadata=None):
+    """Set every figure-styling global in _STYLE_SETTINGS above (figure
+    sizing, legend placement, line/marker/error-bar styling, every font
+    size) from plotting_metadata.json. A missing key, or
+    plotting_metadata=None, keeps this module's default for that key. Call
+    once per plotting_metadata*.json variant, before any plotting function
+    runs -- same convention as configure_plots_dirname."""
+    plotting_metadata = plotting_metadata or {}
+    for key, name, default in _STYLE_SETTINGS:
+        globals()[name] = plotting_metadata.get(key, default)
+    plt.rcParams.update({
+        "axes.titlesize": TITLE_FONTSIZE,
+        "axes.labelsize": AXIS_LABEL_FONTSIZE,
+        "xtick.labelsize": TICK_LABEL_FONTSIZE,
+        "ytick.labelsize": TICK_LABEL_FONTSIZE,
+        "legend.fontsize": LEGEND_FONTSIZE,
+    })
+
+
+plt.rcParams.update({
+    "axes.titlesize": TITLE_FONTSIZE,
+    "axes.labelsize": AXIS_LABEL_FONTSIZE,
+    "xtick.labelsize": TICK_LABEL_FONTSIZE,
+    "ytick.labelsize": TICK_LABEL_FONTSIZE,
+    "legend.fontsize": LEGEND_FONTSIZE,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.spines.bottom": False,
+    "axes.spines.left": False,
+})
+
 
 def _panel_grid_dims(n_panels):
     """(n_cols, n_rows) for laying out ``n_panels`` subplots within one
     standard figure's total width -- at most MAX_PANEL_COLS columns
     sharing STANDARD_FIG_WIDTH_IN between them, wrapping into additional
-    rows (each STANDARD_FIG_HEIGHT_IN tall) rather than adding columns, so
+    rows (each STANDARD_FIG_HEIGHT_IN tall), so
     the figure never exceeds MAX_PANEL_COLS panels per row regardless of
     how many panels (days, windows, ...) there are."""
     n_cols = min(MAX_PANEL_COLS, max(n_panels, 1))
@@ -102,11 +181,15 @@ def _panel_grid_dims(n_panels):
     return n_cols, n_rows
 
 
+def _grid_panel_size_in(n_cols, n_rows, square=False):
+    panel_width = STANDARD_FIG_WIDTH_IN / MAX_PANEL_COLS
+    panel_height = panel_width if square else STANDARD_FIG_HEIGHT_IN
+    return panel_width * n_cols, panel_height * n_rows
+
+
 # Human-readable names for the raw feature columns, used wherever a feature
 # name would otherwise appear verbatim on a figure (e.g. the UMAP cluster
-# effect-size heatmap's x-axis) -- falls back to the raw name for any
-# feature not listed here rather than raising, so new features don't need
-# an entry before they can be plotted.
+# effect-size heatmap's x-axis).
 FEATURE_DISPLAY_NAMES = {
     "Area_um2": "Area",
     "Diameter_um": "Diameter",
@@ -139,7 +222,7 @@ def _um2_label_to_mm2(label):
 
 # Global outlier-removal state, set once per run via configure_outlier_removal
 # (plot.py, from --remove_outliers). Off by default -- every existing
-# caller of filter_by_diameter (nearly every morphology-metrics plot; see
+# caller of apply_outlier_removal_gate (nearly every morphology-metrics plot; see
 # that function's docstring) is unaffected unless explicitly enabled.
 _OUTLIER_REMOVAL = {
     "enabled": False,
@@ -156,7 +239,7 @@ def configure_outlier_removal(
     std_multiplier=3.0, percentile_bounds=(0.05, 0.95),
 ):
     """Enable/configure removing outliers from every morphology-metrics
-    plot's underlying data (via filter_by_diameter), using the exact same
+    plot's underlying data (via apply_outlier_removal_gate), using the exact same
     calculate_outlier_thresholds method plot_variability_and_outliers
     already uses to *report* outliers -- called once from plot.py,
     driven by --remove_outliers, with the project's own outlier_detection
@@ -175,14 +258,6 @@ def configure_outlier_removal(
 def _remove_outlier_rows(df):
     """Drop rows that are an outlier (per _OUTLIER_REMOVAL's configured
     method/multiplier) in ANY of its configured features.
-
-    Thresholds are computed fresh on whatever ``df`` was passed in -- in
-    practice, since filter_by_diameter is normally called on one batch's
-    one day at a time, that means "unusual relative to this same batch on
-    this same day", not pooled across batches/groups (a different, looser
-    granularity than plot_variability_and_outliers's own per-Group-per-Day
-    report, which pools across every batch in a group). NaN values in a
-    feature are never treated as outliers (missing, not extreme).
     """
     settings = _OUTLIER_REMOVAL
     features = [f for f in settings["features"] if f in df.columns]
@@ -207,19 +282,10 @@ def _remove_outlier_rows(df):
     return df[keep_mask]
 
 
-def filter_by_diameter(df, day):
-    """No size/diameter plausibility filtering -- every segmented object's
-    own metrics are kept exactly as originally extracted. This used to
-    apply a day-dependent min/max diameter plausibility gate; that's been
-    removed entirely (per explicit instruction) since silently dropping
-    organoids in a way that isn't visible in the output data is worse than
-    keeping the full, originally-segmented population and letting
-    --remove_outliers (IQR or another configured method, optionally
-    log-scale for size-like features -- see calculate_outlier_thresholds)
-    exclude statistical outliers downstream, on demand, when actually
-    wanted. ``day`` is kept as a parameter purely for call-site
-    compatibility -- every existing caller still passes it, even though
-    this function no longer uses it itself.
+def apply_outlier_removal_gate(df, day):
+    """Schema guard: if the dataframe has no
+    Diameter_um column, it returns an empty
+    DataFrame instead of the input.
     """
     if 'Diameter_um' not in df.columns:
         return pd.DataFrame()
@@ -259,16 +325,13 @@ def _ensure_metric_identity_columns(df):
 
 
 def prepare_morphology_records(df, day, features, aggregation_level="object"):
-    """
-    Return object-level rows or one row per image/well.
-
-    Object level preserves individual organoids. Well/image level converts each
+    """Object level preserves individual organoids. Well/image level converts each
     image into a per-well mean for each requested feature and keeps the number of
     detected organoids in ``Object_Count_In_Image``.
     """
     features = [features] if isinstance(features, str) else list(features)
     df = _ensure_metric_identity_columns(df)
-    df = filter_by_diameter(df, day).copy()
+    df = apply_outlier_removal_gate(df, day).copy()
     if df.empty:
         return df
 
@@ -309,10 +372,9 @@ def prepare_morphology_records(df, day, features, aggregation_level="object"):
 
 
 def _hedges_g(vals1, vals2):
-    """Bias-corrected standardized mean difference (Hedges' g) between two
+    """Standardized mean difference (Hedges' g) between two
     independent samples -- reported alongside every Welch's t-test p-value
-    in this module, since significance alone doesn't convey effect
-    magnitude. Uses the pooled-variance convention (as in Cohen's d) with
+    in this module. Uses the pooled-variance convention (as in Cohen's d) with
     the small-sample correction factor J = 1 - 3/(4*df - 1)
     (Hedges, 1981; Borenstein et al. 2009), df = n1 + n2 - 2. Positive means
     group 1 > group 2. Returns NaN if either sample has fewer than 2 values
@@ -338,11 +400,7 @@ def _hedges_g(vals1, vals2):
 def _stat_annotation_text(s):
     """Compact 'g=<Hedges' g> <stars>' label for a pairwise-comparison
     bracket annotation. Effect size is shown directly on every group-
-    comparison figure (grid scatterplots, box/strip-plot grids) rather
-    than only in each figure's companion stats CSV, since the manuscript
-    build only carries forward outlier/detection tables and expects the
-    effect sizes behind a figure's significance stars to be readable from
-    the figure itself."""
+    comparison figure (grid scatterplots, box/strip-plot grids)."""
     g = s.get('hedges_g', float('nan'))
     g_text = f"g={g:.2f}" if pd.notna(g) else "g=n/a"
     return f"{g_text} {s['stars']}"
@@ -380,34 +438,22 @@ def _annotate_transitions(ax, transition_days):
     """Draw a vertical marker + rotated label on ``ax`` for each {day: label}
     in ``transition_days`` (plotting_metadata.json's "transition_days") --
     e.g. a day where the imaging/plating regime itself changed (96-well/
-    single-organoid -> 6-well/multiple-organoids-per-well), so a jump or
-    shift in a longitudinal metric at that day isn't left unexplained. A
-    no-op for the empty dict every project gets by default. Call this
-    AFTER all data-driven artists are on the axes (so ylim reflects the
-    real data, not just the marker) and before saving."""
+    single-organoid -> 6-well/multiple-organoids-per-well).
+    A no-op for the empty dict every project gets by default."""
     if not transition_days:
         return
 
-    # Read the current (already data-driven) y-limit directly -- do NOT
-    # call ax.set_autoscale_on(False) here: before the axes has ever been
-    # drawn, get_ylim()/get_xlim() can still report matplotlib's raw
-    # (0, 1) default rather than the real autoscaled range, and freezing
-    # autoscale at that point stuck later artists (this exact bug blew a
-    # plot_well_metric_over_time figure up to 100,000+ px wide once
-    # transition_days actually had an entry to draw). axvline/text don't
-    # perturb autoscaling on their own, so nothing here needs it disabled.
     y_top = ax.get_ylim()[1]
     for day, label in sorted(transition_days.items()):
         ax.axvline(day, color='gray', linestyle='--', linewidth=1, alpha=0.6, zorder=0)
         ax.text(
             day, y_top, f" {label}", rotation=90, ha='left', va='top',
-            fontsize=7, color='gray', alpha=0.8,
+            fontsize=ANNOTATION_FONTSIZE, color='gray', alpha=0.8,
         )
 
 
-def plot_feature_over_time(base_dir, project_dir, batches_complete_info, features, metric_names, group_by="batch", aggregation_level="object", error_bar="sem", transition_days=None, min_wells_for_stats=2):
-    """
-    Plots morphological features over time (mean +/- error_bar -- "sem" by
+def plot_feature_over_time(base_dir, project_dir, batches_complete_info, features, metric_names, group_by="batch", aggregation_level="object", error_bar="sem", transition_days=None, min_wells_for_stats=3):
+    """Plots morphological features over time (mean +/- error_bar -- "sem" by
     default, or "sd"/"ci"; see _resolve_error_bar_values -- set via
     plotting_metadata.json's "line_plot_error_bar").
     Performs Welch's T-test with FDR (Benjamini-Hochberg) correction across tested days.
@@ -491,24 +537,9 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
         )
         
         # --- 2. SUMMARY STATISTICS ---
-        # Two summaries, deliberately kept separate: `visualization_summary`
-        # at whatever aggregation_level was requested (purely descriptive --
-        # exported under its original filename, unchanged), and `summary`
-        # -- ALWAYS well-level, from df_stats_all -- which is what actually
-        # drives the plotted mean+/-error-bar line, its N, and the
-        # significance annotation's position. Before this fix, the plotted
-        # line/N came from `visualization_summary` even when
-        # aggregation_level == "object", so a project with many organoids
-        # per well (Organoid_Mode == "multiple") got a deceptively tight
-        # error band (N inflated by pooling every organoid as if
-        # independent) sitting right next to a significance star honestly
-        # tested on well-level N -- the two numbers on the same figure
-        # didn't agree. This mirrors the identical decoupling the p-value
-        # itself already used (see the data-collection comment above) and
-        # is also the statistically correct estimate of "the group's mean"
-        # when wells hold very different organoid counts -- a mean of
-        # well-means gives every well equal weight, rather than letting a
-        # 13-organoid well outweigh a 9-organoid one in a pooled average.
+        # Two summaries: `visualization_summary` at whatever aggregation_level
+        # was requested , and `summary` -- ALWAYS well-level, from df_stats_all
+        # -- , its N, and the significance annotation's position.
         visualization_summary = df_all.groupby(['Group', 'Day'])[feature].agg(['mean', 'std', 'count']).reset_index()
         visualization_summary['sem'] = visualization_summary['std'] / np.sqrt(visualization_summary['count'])
         visualization_summary['error_value'] = _resolve_error_bar_values(visualization_summary, error_bar)
@@ -619,7 +650,7 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
             )
 
         # --- 4. PLOTTING ---
-        palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+        palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
         def scatter_measurement_points(ax):
             rng = np.random.default_rng(7)
@@ -651,14 +682,13 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
 
         def add_stats_and_save(ax, filename):
             for res in stats_data:
-                #if res['label'] != "ns": # Only plot if significant after correction
                 text = _stat_annotation_text({'stars': res['label'], 'hedges_g': res['hedges_g']})
                 ax.text(res['Day'], res['y_pos'] * 1.05, text,
-                            ha='center', va='bottom', color='black', fontsize=8, fontweight='bold')
+                            ha='center', va='bottom', color='black', fontsize=STATS_FONTSIZE)
             ax.set_xlabel('Day')
             ax.set_ylabel(f"{metric_label}")
             ax.grid(True, alpha=0.3)
-            ax.legend(frameon=False, loc='upper left')
+            _place_legend(fig, ax=ax)
             _annotate_transitions(ax, transition_days)
             plt.tight_layout()
             save_path = os.path.join(plot_dir, filename)
@@ -667,24 +697,23 @@ def plot_feature_over_time(base_dir, project_dir, batches_complete_info, feature
             plt.close()
 
         # Plot mean +/- error_bar (default "sem"; see _resolve_error_bar_values)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.set_style("whitegrid")
+        fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+        _apply_plot_style()
         scatter_measurement_points(ax)
         for group in unique_groups:
             data = summary[summary['Group'] == group]
             ax.errorbar(data['Day'], data['mean'], yerr=data['error_value'],
-                        label=group, marker='o', capsize=5, color=palette[group], linewidth=2, zorder=3)
+                        label=group, marker='o', markersize=MARKER_SIZE, capsize=ERRORBAR_CAPSIZE,
+                        color=palette[group], linewidth=LINE_WIDTH, zorder=3)
 
         suffix = str(error_bar).lower()
-        add_stats_and_save(ax, f"{feature}_{aggregation_level}_{group_by}_over_time_{suffix}.png")
+        add_stats_and_save(ax, f"{feature}_{aggregation_level}_{group_by}_over_time_{suffix}.{FILE_FORMAT}")
             
 
 def _select_non_redundant_features(df, candidate_features, correlation_threshold=0.9, method="spearman"):
     """
-    Greedily select a non-redundant feature subset from ``candidate_features``,
-    computed on this ``df``'s own real, pooled data -- not a fixed list tuned
-    on one project's correlation structure, since that would not generalize
-    to a different project's organoid morphology.
+    Select a non-redundant feature subset from ``candidate_features``,
+    computed on this ``df``'s pooled data.
 
     Iterates features in the order given, keeping a feature unless it
     correlates with an already-kept feature above ``correlation_threshold``
@@ -696,16 +725,9 @@ def _select_non_redundant_features(df, candidate_features, correlation_threshold
     Pearson r=0.71 but Spearman r=1.00 for that pair on real data) while
     Spearman correctly reports it as r=1.00.
 
-    Because earlier features in the list are preferred over later, more
-    redundant ones, simply ordering ``candidate_features`` with a preferred
-    representative first (e.g. Area_um2 before Diameter_um/Perimeter_um/
-    Feret_Diameter_Max_um; Aspect_Ratio before Eccentricity) is enough to
-    express that preference -- no separate priority list is needed.
-
     Returns (selected_features, dropped_log), where dropped_log is a list of
     dicts recording each excluded feature, which retained feature it
-    correlated with, and the correlation value -- for transparency about why
-    a feature was left out of the PCA.
+    correlated with, and the correlation value.
     """
     available = [f for f in candidate_features if f in df.columns]
     numeric_df = df[available].apply(pd.to_numeric, errors='coerce')
@@ -752,7 +774,7 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
 
     # 2. Generate the HUSL palette using Seaborn
     # This creates a list of RGB tuples
-    husl_palette = sns.color_palette("husl", len(all_possible_groups))
+    husl_palette = sns.color_palette(COLOR_PALETTE, len(all_possible_groups))
     color_map = dict(zip(all_possible_groups, husl_palette))
 
     candidate_features = list(features) if features else [
@@ -766,7 +788,7 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
     markers = ["o", "v", "s", "*", "D", "P", "X", "^"]
 
     # --- Pool every day/batch's data once, both to select a non-redundant
-    # feature subset from this project's own real correlation structure, and
+    # feature subset from this project's correlation structure, and
     # to avoid re-reading each CSV a second time inside the day loop below. ---
     pooled = []
     for day in days:
@@ -776,7 +798,7 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
             )
             if os.path.exists(metrics_csv):
                 pooled_df = pd.read_csv(metrics_csv)
-                pooled_df = filter_by_diameter(pooled_df, day)
+                pooled_df = apply_outlier_removal_gate(pooled_df, day)
                 if pooled_df.empty:
                     continue
                 pooled_df = pooled_df.copy()
@@ -806,11 +828,10 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
             if entry['kept_instead_of']:
                 print(f"  dropped {entry['feature']}: {entry['reason']}")
 
-    n_cols = 3
-    n_rows = int(np.ceil(len(days) / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 6 * n_rows))
-    sns.set_style("whitegrid")
-    
+    n_cols, n_rows = _panel_grid_dims(len(days))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=_grid_panel_size_in(n_cols, n_rows, square=True), squeeze=False)
+    _apply_plot_style()
+
     axes = axes.flatten()
 
     group_handles = {} # To store legend info
@@ -858,7 +879,7 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
                     linestyle='None', markersize=8, label=group
                 )
 
-        ax.set_title(f'Day {day}')
+        ax.set_title(f'Day {day}', fontsize=GRID_TITLE_FONTSIZE)
         ax.set_xlabel('PC1')
         ax.set_ylabel('PC2')
         ax.grid(True, alpha=0.3)
@@ -872,34 +893,23 @@ def plot_pca_grid_by_group(base_dir, project_dir, days, batches_complete_info, g
     sorted_labels = sorted(group_handles.keys())
     handles = [group_handles[lbl] for lbl in sorted_labels]
     
-    fig.legend(
-        handles=handles, 
-        loc='lower center', 
-        bbox_to_anchor=(0.5, -0.05), 
-        ncol=min(len(handles), 5), 
-        title=None,
-        frameon=False
-    )
+    _place_legend(fig, handles=handles)
 
     # 3. Use rect to make room at the bottom for the legend (left, bottom, right, top)
     plt.tight_layout(rect=[0, 0.05, 1, 1])
 
-    #fig.tight_layout()
-
     # Save plot
-    filename = os.path.join(plot_dir, f'PCA_grid_by_{group_by}.png')
+    filename = os.path.join(plot_dir, f'PCA_grid_by_{group_by}.{FILE_FORMAT}')
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.show()
 
 
 def _cluster_purity(cluster_labels, condition_labels):
-    """Weighted majority-vote purity: for each real cluster (excluding
+    """Weighted majority-vote purity: for each cluster (excluding
     HDBSCAN's -1 noise label), the fraction of its members belonging to
     that cluster's single most common condition, averaged across clusters
     weighted by cluster size. 1.0 means every cluster is made up of a
-    single condition; the chance-level baseline is roughly the largest
-    condition's own share of the population, not 0 -- compare against that,
-    not against zero."""
+    single condition."""
     cluster_labels = np.asarray(cluster_labels)
     condition_labels = np.asarray(condition_labels)
     mask = cluster_labels != -1
@@ -918,48 +928,28 @@ def plot_umap_clusters(
     n_neighbors=15, min_dist=0.1, random_state=42,
 ):
     """
-    UMAP + HDBSCAN clustering of organoid morphology, one embedding per day,
-    to surface morphological subtypes that a linear method (PCA, see
-    plot_pca_grid_by_group) can blur together into a single elongated
-    cloud.
+    UMAP + HDBSCAN clustering of organoid morphology, one embedding per day.
 
-    Feature set: the same non-redundant selection as plot_pca_grid_by_group
-    (_select_non_redundant_features, computed once on this project's own
-    data pooled across every day in ``days``), so both dimensionality-
-    reduction views use an identical, redundancy-checked feature basis and
-    stay directly comparable to each other.
+    The feature set used is the same non-redundant selection as
+    plot_pca_grid_by_group (_select_non_redundant_features).
 
     Clustering runs directly on each day's own 2D UMAP embedding (not a
-    high-dimensional graph, unlike typical single-cell pipelines) -- the
-    simplest choice, and the one where what you see in the scatter plot is
-    exactly what was clustered, at the cost of inheriting UMAP's own
-    well-known distortion of relative distances. Treat cluster boundaries
-    as a hypothesis to follow up on, not a statistically self-justifying
-    partition. HDBSCAN's noise label (-1, "not confidently assigned to any
-    cluster") is plotted in light gray and excluded from the downstream
+    high-dimensional graph, unlike typical single-cell pipelines).
+    HDBSCAN's noise label (-1, "not confidently assigned to any cluster")
+    is plotted in light gray and excluded from the downstream
     distinguishing-feature stats.
 
     ``cluster_selection_method`` defaults to "eom" (HDBSCAN's own default,
     excess of mass): picks whichever clusters are most *stable* across the
-    condensed cluster tree, adopted here as this pipeline's standard per
-    explicit instruction. The alternative, "leaf", selects the tree's
+    condensed cluster tree. The alternative, "leaf", selects the tree's
     leaves directly instead, trading more noise points and smaller clusters
-    for finer sub-structure -- confirmed empirically on real data
-    (6_WNT_treatment/AB115-AB117, Day 2) to recover 42 clusters where "eom"
-    collapses everything but a couple of clearly-separate outlier groups
-    into one undifferentiated mass (2 clusters total: sizes 539 and 11, out
-    of n=550). Pass "leaf" in for a project/day where "eom" is visibly
-    over-collapsing a population with real sub-structure.
-
-    Each day is embedded and clustered independently -- cluster numbering
-    carries no meaning across days (Day 10's cluster 0 has no relationship
-    to Day 20's cluster 0).
+    for finer sub-structure. Pass "leaf" in for a project/day where "eom" is
+    visibly over-collapsing a population with real sub-structure.
 
     For every (day, cluster) with at least 2 members (and at least 2
     non-members), computes Hedges' g and a Welch's t-test (that cluster
     vs. every other organoid that day, pooled) per feature, BH-FDR
-    corrected across every (day, cluster, feature) test -- the same
-    convention as every other statistical test in this module -- to answer
+    corrected across every (day, cluster, feature) test to answer
     "which features distinguish this cluster from the rest". Also cross-
     tabulates cluster membership against ``group_by``'s existing groups
     (does this cluster correspond to a known condition, or cut across
@@ -974,12 +964,7 @@ def plot_umap_clusters(
     CSVs under plots/plot_data/, plus the UMAP scatter grid, one cluster x
     feature effect-size heatmap per day, and one cluster-composition
     stacked-bar figure per (segregation_groups column, day) pair (skipped
-    for days with fewer than 1 real cluster) under plots/ -- the
-    composition figure for a given day is sized with the exact same
-    width/height formula as that day's effect-size heatmap (see
-    BAR_SLOT_HEIGHT_IN below), and both sort clusters the same way
-    (ascending, cluster 0 at the top), so the two figure types are
-    directly comparable side by side for the same day.
+    for days with fewer than 1 real cluster) under plots/.
 
     ARI/NMI answer "does cluster membership statistically align with this
     known grouping" (0 = no better than chance, 1 = perfect agreement;
@@ -1015,7 +1000,7 @@ def plot_umap_clusters(
             )
             if os.path.exists(metrics_csv):
                 pooled_df = pd.read_csv(metrics_csv)
-                pooled_df = filter_by_diameter(pooled_df, day)
+                pooled_df = apply_outlier_removal_gate(pooled_df, day)
                 if pooled_df.empty:
                     continue
                 pooled_df = _ensure_metric_identity_columns(pooled_df).copy()
@@ -1040,7 +1025,7 @@ def plot_umap_clusters(
 
     print(f"UMAP clustering ({group_by}): using non-redundant features {selected_features}")
 
-    sns.set_style("whitegrid")
+    _apply_plot_style()
 
     all_assignments = []
     all_stats = []
@@ -1056,10 +1041,8 @@ def plot_umap_clusters(
             print(f"Day {day}: only {len(df_day)} organoids, skipping (need >= {min_required}).")
             continue
 
-        # One standalone figure per day, at the standard figure size -- not
-        # a combined subplot grid -- so each day's embedding is its own
-        # plot rather than a panel sharing space with every other day.
-        fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+        # One standalone figure per day, square (STANDARD_FIG_WIDTH_IN x STANDARD_FIG_WIDTH_IN).
+        fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_WIDTH_IN))
 
         X_scaled = StandardScaler().fit_transform(df_day[selected_features].values)
         embedding = umap.UMAP(
@@ -1079,34 +1062,26 @@ def plot_umap_clusters(
 
         unique_clusters = sorted(c for c in set(cluster_labels) if c != -1)
         noise_mask = cluster_labels == -1
-        palette = dict(zip(unique_clusters, sns.color_palette("husl", max(len(unique_clusters), 1))))
+        palette = dict(zip(unique_clusters, sns.color_palette(COLOR_PALETTE, max(len(unique_clusters), 1))))
 
         if noise_mask.any():
             ax.scatter(embedding[noise_mask, 0], embedding[noise_mask, 1], color='lightgray', s=10, alpha=0.5, zorder=1)
         for cluster_id in unique_clusters:
             mask = cluster_labels == cluster_id
             ax.scatter(embedding[mask, 0], embedding[mask, 1], color=palette[cluster_id], s=15, alpha=0.8, zorder=2)
-            # Cluster label placed directly on the cluster (at its own
-            # centroid) instead of in a side/corner legend -- with 10+
-            # clusters a legend key becomes a long list the reader has to
-            # cross-reference by color; an in-place label reads directly off
-            # the point cloud.
+            # Cluster label placed directly on the cluster (at its own centroid).
             centroid = embedding[mask].mean(axis=0)
             ax.annotate(
                 f'C{cluster_id}', xy=centroid, ha='center', va='center',
-                fontsize=8, fontweight='bold', color='black', zorder=3,
+                fontsize=CLUSTER_LABEL_FONTSIZE, fontweight='bold', color='black', zorder=3,
                 bbox=dict(boxstyle='round,pad=0.15', facecolor='white', edgecolor='none', alpha=0.7),
             )
 
-        ax.set_title(f'Day {day} ({len(unique_clusters)} clusters, n={len(df_day)})')
+        ax.set_title(f'Day {day} ({len(unique_clusters)} clusters, n={len(df_day)})', fontsize=GRID_TITLE_FONTSIZE)
         ax.set_xlabel('UMAP1')
         ax.set_ylabel('UMAP2')
         ax.grid(True, alpha=0.3)
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
+
         if unique_clusters:
             contingency = df_day.groupby(['Cluster', 'Group']).size().reset_index(name='Count')
             contingency['Day'] = day
@@ -1160,7 +1135,7 @@ def plot_umap_clusters(
                     })
 
         plt.tight_layout()
-        save_path = os.path.join(plot_dir, f'umap_clusters_by_{group_by}_day{day}.png')
+        save_path = os.path.join(plot_dir, f'umap_clusters_by_{group_by}_day{day}.{FILE_FORMAT}')
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
         print(f"Plot saved: {save_path}")
@@ -1193,12 +1168,7 @@ def plot_umap_clusters(
                 f"purity={row['Weighted_Purity']:.3f} (vs {row['Largest_Group_Share']:.3f} baseline), {chi2_str}"
             )
 
-        # --- Cluster composition stacked bar, one figure per (segregation
-        # group, day) -- matching umap_cluster_effect_size_heatmap's own
-        # one-figure-per-day structure (rather than the previous single
-        # figure combining every day, whose height summed cluster counts
-        # across ALL days and so could never match a single day's heatmap)
-        # so the two figure types are directly comparable for the same day.
+        # Cluster composition stacked bar, one figure per (segregation group, day)
         BAR_SLOT_HEIGHT_IN = 0.3
         for col in segregation_groups:
             if assignments_df.empty or col not in assignments_df.columns:
@@ -1208,7 +1178,7 @@ def plot_umap_clusters(
                 continue
 
             all_categories = sorted(col_data[col].dropna().unique())
-            cat_palette = dict(zip(all_categories, sns.color_palette("husl", len(all_categories))))
+            cat_palette = dict(zip(all_categories, sns.color_palette(COLOR_PALETTE, len(all_categories))))
 
             for day in sorted(col_data['Day'].unique()):
                 day_data = col_data[col_data['Day'] == day]
@@ -1242,11 +1212,8 @@ def plot_umap_clusters(
                     mlines.Line2D([], [], color=cat_palette[c], marker='s', linestyle='None', markersize=10, label=str(c))
                     for c in all_categories
                 ]
-                fig_bar.legend(
-                    handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.05),
-                    ncol=min(len(handles), 2), frameon=False, title="",
-                )
-                composition_path = os.path.join(plot_dir, f"umap_cluster_composition_by_{col}_day{day}.png")
+                _place_legend(fig_bar, handles=handles)
+                composition_path = os.path.join(plot_dir, f"umap_cluster_composition_by_{col}_day{day}.{FILE_FORMAT}")
                 plt.tight_layout()
                 plt.savefig(composition_path, dpi=300, bbox_inches='tight')
                 plt.close(fig_bar)
@@ -1282,38 +1249,23 @@ def plot_umap_clusters(
             # figure types share the same height for the same cluster count.
             heatmap_height = max(0.3 * pivot.shape[0], STANDARD_FIG_HEIGHT_IN)
             fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, heatmap_height))
-            # annot_kws fontsize set explicitly, independent of the general
-            # (13pt) rcParams font size -- at this figure's fixed, narrow
-            # width, cell annotations for every feature column (as many as
-            # 10) would otherwise run into each other.
             sns.heatmap(
                 pivot, annot=True, fmt=".2f", cmap="RdBu_r", center=0, ax=ax,
-                annot_kws={"size": 7},
+                annot_kws={"size": HEATMAP_ANNOT_FONTSIZE},
                 cbar_kws={'label': "Hedges' g (cluster vs rest)"},
                 xticklabels=[_display_feature_name(f) for f in pivot.columns],
             )
             plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
             plt.tight_layout()
-            heatmap_path = os.path.join(plot_dir, f"umap_cluster_effect_size_heatmap_day{day}.png")
+            heatmap_path = os.path.join(plot_dir, f"umap_cluster_effect_size_heatmap_day{day}.{FILE_FORMAT}")
             plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
             plt.close()
 
     return assignments_df, stats_df
 
 
-def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_info, features, metric_names, group_by='batch', min_wells_for_stats=2):
-    """
-    Creates a grid of scatter plots with Welch's T-test and FDR correction.
-    Vertical axis labels and ticks are hidden for internal panels.
-
-    Called once per grouping variable from plot.py's `for group in
-    groups:` loop, so both outputs are named
-    "{feature}_grid_scatterplot_by_{group_by}.png"/
-    "{feature}_grid_scatterplot_stats_by_{group_by}.csv" (matching
-    plot_pca_grid_by_group's PCA_grid_by_{group_by}.png convention) -- a
-    group_by-agnostic filename here would mean every grouping variable's
-    figure/stats land on the same path and only the last group in
-    `plotting_metadata.json`'s "groups" list survives on disk.
+def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_info, features, metric_names, group_by='batch', min_wells_for_stats=3):
+    """Creates a grid of scatter plots with Welch's T-test and FDR correction.
     """
     plot_dir = _plots_root(base_dir, project_dir)
     plot_data_dir = os.path.join(plot_dir, 'plot_data')
@@ -1326,13 +1278,13 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
 
     # 1. Setup metadata mapping
     plate_group_map = {
-        batch_id: info.get(group_by, batch_id)
-        for batch_id, info in batches_complete_info.items()
+        info["batch"]: info.get(group_by, info["batch"])
+        for info in batches_complete_info
     }
     all_possible_groups = sorted(list(set(plate_group_map.values())))
 
     # 2. Setup Plotting Aesthetics
-    husl_palette = sns.color_palette("husl", len(all_possible_groups))
+    husl_palette = sns.color_palette(COLOR_PALETTE, len(all_possible_groups))
     color_dict = dict(zip(all_possible_groups, husl_palette))
 
     for f_idx, feature in enumerate(features):
@@ -1341,7 +1293,6 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
             metric_label = _um2_label_to_mm2(metric_label)
 
         # --- PHASE A: DATA GATHERING & STATS CALCULATION ---
-        # We need to calculate ALL p-values first to apply FDR correction across the whole feature
         stats_list = []
         skipped_stats_list = []
         feature_data_by_day = {}
@@ -1363,12 +1314,7 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
                     # Statistics run on well-level means (one value per
                     # Image_ID/Well_ID), never on the raw per-object rows
                     # used for the scatter/violin visualization above -- see
-                    # plot_feature_over_time's identical convention. Without
-                    # this, organoid_mode == "multiple" data would treat
-                    # every non-independent organoid from the same well as
-                    # its own sample, inflating apparent significance. A
-                    # no-op for organoid_mode == "single" (one organoid per
-                    # well already).
+                    # plot_feature_over_time's identical convention.
                     df_well = prepare_morphology_records(df, day, [feature], aggregation_level="well")
                     if not df_well.empty and feature in df_well.columns:
                         df_well = df_well.copy()
@@ -1426,11 +1372,7 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
                     f"Day {s['day']} {s['pair'][0]} vs {s['pair'][1]}: p_raw={s['p_raw']:.5f} "
                     f"p_adj={p:.5f} ({s['stars']}), Hedges' g = {s['hedges_g']:.3f} (n={s['n1']} vs {s['n2']} wells)"
                 )
-            # group_by is embedded in the filename (matching plot_pca_grid_by_group's
-            # PCA_grid_by_{group_by}.png convention) because this function is called
-            # once per grouping variable from plot.py's `for group in groups:`
-            # loop -- without it, every group's stats/figure landed on the same path
-            # and only the last group in the configured `groups` list survived on disk.
+
             pd.DataFrame(stats_list + skipped_stats_list).to_csv(
                 os.path.join(plot_data_dir, f"{feature}_grid_scatterplot_stats_by_{group_by}.csv"), index=False
             )
@@ -1441,32 +1383,22 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
 
         # --- PHASE B: PLOTTING ---
         n_cols, n_rows = _panel_grid_dims(len(days))
-        # No rotated/visible x-tick labels on these panels (see
-        # ax.tick_params(labelbottom=False) below) and no per-panel x-label
-        # text either, so both the inter-row gap and the legend margin can
-        # be tighter than a figure that reserves room for label text there.
+
         LEGEND_RESERVE_IN = 0.6
-        fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN/3*n_cols, STANDARD_FIG_HEIGHT_IN * n_rows))
+        fig = plt.figure(figsize=_grid_panel_size_in(n_cols, n_rows))
         bottom_frac = LEGEND_RESERVE_IN / (STANDARD_FIG_HEIGHT_IN * n_rows + LEGEND_RESERVE_IN)
         gs = fig.add_gridspec(n_rows, n_cols, top=0.95, bottom=bottom_frac, hspace=0.15, wspace=0.3)
-        sns.set_style("whitegrid")
+        _apply_plot_style()
         axes = [fig.add_subplot(gs[i // n_cols, i % n_cols]) for i in range(len(days))]
         for ax in axes[1:]:
             ax.sharey(axes[0])
 
         # All day-panels share one y-axis (via sharey above), so the
         # vertical spacing between stacked bracket rows must be computed
-        # from ONE shared reference rather than each panel's own y_max --
-        # otherwise an earlier day with a much smaller y_max (organoids
-        # are smaller early in development) gets a proportionally tiny
-        # y_offset that renders as illegibly cramped brackets once drawn
-        # against a later, larger day's shared axis range. The GLOBAL max
-        # across every day (rather than, say, the last day specifically)
-        # is used as that reference -- a later day isn't guaranteed to
-        # have the largest max (e.g. fewer wells surviving by then) even
-        # when the feature grows on average -- each panel still starts its
-        # own stack at its own y_max, only the step size between rows is
-        # shared.
+        # from ONE shared reference. The GLOBAL max across every day
+        # is used as that reference even when the feature grows on average
+        # -- each panel still starts its own stack at its own y_max, only
+        # the step size between rows is shared.
         all_day_maxes = [df[feature].max() for df in feature_data_by_day.values()]
         shared_y_offset = max(all_day_maxes) * 0.3 if all_day_maxes else None
 
@@ -1504,31 +1436,25 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
             y_offset = shared_y_offset if shared_y_offset else y_max * 0.3
             
             for s_idx, s in enumerate(day_stats):
-                #if s['stars'] == "ns": continue
                 g1, g2 = s['pair']
                 x1, x2 = u_groups.index(g1), u_groups.index(g2)
                 
                 # Draw brackets/stars manually
                 h = y_max + (s_idx * y_offset)
                 ax.plot([x1, x1, x2, x2], [h, h + y_offset*0.2, h + y_offset*0.2, h], lw=0.5, color='black')
-                ax.text((x1 + x2) * 0.5, h + y_offset*0.2, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=stats_fontsize)
+                ax.text((x1 + x2) * 0.5, h + y_offset*0.2, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=STATS_FONTSIZE)
 
             # 4. Vertical Axis Cleanup
             if d_idx % n_cols > 0:
                 ax.set_ylabel("") # Remove axis title
                 ax.tick_params(labelleft=False) # Remove numerical labels
-                # ax.spines['left'].set_visible(False) Optional: remove left spine for "floating" look
             else:
                 ax.set_ylabel(metric_label)
             
             ax.tick_params(labelbottom=False)
             ax.grid(True, alpha=0.3)
             ax.set_xlabel("")
-            ax.set_title(f"Day {day}", fontsize=10)
-            ax.spines['bottom'].set_visible(False)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_visible(False) 
+            ax.set_title(f"Day {day}", fontsize=GRID_TITLE_FONTSIZE)
 
         # 5. Global Legend
         for i, grp in enumerate(all_possible_groups):
@@ -1538,13 +1464,11 @@ def plot_feature_grid_scatters(base_dir, project_dir, days, batches_complete_inf
             )
         
         handles = [group_handles[k] for k in sorted(group_handles.keys())]
-        fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.02),
-                   ncol=min(len(handles), 2), frameon=False, title=None)
+        _place_legend(fig, handles=handles, ncol=min(len(handles), 2))
 
-        #plt.suptitle(f"{metric_label} Growth Trajectory", fontsize=16, fontweight='bold', y=1.02)
         # 6. Save
         # group_by embedded here too, for the same reason as the stats CSV above.
-        save_path = os.path.join(plot_dir, f"{feature}_grid_scatterplot_by_{group_by}.png")
+        save_path = os.path.join(plot_dir, f"{feature}_grid_scatterplot_by_{group_by}.{FILE_FORMAT}")
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
 
@@ -1593,9 +1517,7 @@ def _resolve_std_multiplier(manual_std_thresholds, feature=None, group=None, day
 
 
 # Physical size measures -- strictly positive and typically right-skewed
-# (log-normal-ish), so a symmetric fence on the raw scale over-flags the
-# upper tail as "outliers" when it's really just ordinary skew. Shape
-# descriptors (Aspect_Ratio, Circularity, Roundness, Solidity,
+# (log-normal-ish). Shape descriptors (Aspect_Ratio, Circularity, Roundness, Solidity,
 # Eccentricity) are dimensionless/bounded ratios, not size-like, and are
 # deliberately excluded here -- they keep the raw-scale fence.
 SIZE_LIKE_FEATURES = {
@@ -1752,7 +1674,7 @@ def plot_variability_and_outliers(
     reports outliers AMONG -- individual organoids ("object", the default)
     or well-means ("well"). It is intentionally independent of what
     --remove_outliers actually REMOVES elsewhere in the pipeline: real
-    removal (configure_outlier_removal/filter_by_diameter, used by every
+    removal (configure_outlier_removal/apply_outlier_removal_gate, used by every
     other plotting function via prepare_morphology_records) always runs on
     individual organoid rows before any well-mean is computed, regardless
     of this setting -- see audit_outlier_exclusion_by_well for a report of
@@ -1816,15 +1738,9 @@ def plot_variability_and_outliers(
 
         df_all = pd.concat(all_records, ignore_index=True)
         unique_groups = sorted(df_all['Group'].dropna().unique())
-        palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+        palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
-        # Coefficient of variation (SD/mean, as a %), not raw SD -- raw SD
-        # on its own conflates "more variable" with "just bigger" (organoids
-        # that have grown 10x by a later day trivially have ~10x the
-        # absolute SD even at constant relative spread). Normalizing by the
-        # mean isolates whether relative variability itself is changing.
-        # NaN wherever the mean is ~0 (division by a near-zero mean would
-        # otherwise blow up into an uninterpretably large ratio).
+        # Coefficient of variation (SD/mean, as a %).
         cv_summary = df_all.groupby(['Group', 'Day'])[feature].agg(['mean', 'std']).reset_index()
         cv_summary['cv_pct'] = np.where(
             cv_summary['mean'].abs() > 1e-9,
@@ -1832,17 +1748,13 @@ def plot_variability_and_outliers(
             np.nan,
         )
         fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
-        sns.set_style("whitegrid")
-        sns.lineplot(data=cv_summary, x='Day', y='cv_pct', hue='Group', palette=palette, ax=ax, linewidth=1, marker='o', zorder=2, markersize=5)
+        _apply_plot_style()
+        sns.lineplot(data=cv_summary, x='Day', y='cv_pct', hue='Group', palette=palette, ax=ax, linewidth=LINE_WIDTH, marker='o', zorder=2, markersize=MARKER_SIZE)
         ax.set_ylabel(f'CV (%) - {metric_label}')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.legend(frameon=False)
+        _place_legend(fig, ax=ax)
         ax.grid(True, alpha=0.3)
         _annotate_transitions(ax, transition_days)
-        plt.savefig(os.path.join(plot_dir, f"{feature}_{aggregation_level}_variability_cv.png"), bbox_inches='tight', dpi=300)
+        plt.savefig(os.path.join(plot_dir, f"{feature}_{aggregation_level}_variability_cv.{FILE_FORMAT}"), bbox_inches='tight', dpi=300)
         plt.close()
 
         feature_summary_rows = []
@@ -1925,8 +1837,8 @@ def plot_variability_and_outliers(
         outlier_objects = pd.DataFrame(feature_outlier_rows)
         outlier_objects.to_csv(os.path.join(outlier_dir, f"{feature}_outlier_objects.csv"), index=False)
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.set_style("whitegrid")
+        fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+        _apply_plot_style()
         sns.lineplot(
             data=outlier_summary,
             x='Day',
@@ -1935,13 +1847,14 @@ def plot_variability_and_outliers(
             marker='s',
             palette=palette,
             ax=ax,
+            linewidth=LINE_WIDTH,
+            markersize=MARKER_SIZE,
         )
-        #ax.set_title(f'Percentage of Outliers in {metric_label} ({outlier_method})')
         ax.set_ylabel('Outliers (%)')
-        ax.legend(frameon=False)
+        _place_legend(fig, ax=ax)
         ax.grid(True, alpha=0.3)
         _annotate_transitions(ax, transition_days)
-        plt.savefig(os.path.join(plot_dir, f"{feature}_{aggregation_level}_outlier_percentage.png"), bbox_inches='tight', dpi=300)
+        plt.savefig(os.path.join(plot_dir, f"{feature}_{aggregation_level}_outlier_percentage.{FILE_FORMAT}"), bbox_inches='tight', dpi=300)
         plt.close()
 
     if all_summary_rows:
@@ -2042,9 +1955,7 @@ def plot_well_organoid_counts_over_time(base_dir, project_dir, batches_complete_
         .reset_index()
         .rename(columns={'count': 'N_Wells'})
     )
-    # _resolve_error_bar_values reads 'count' -- keep both names rather than
-    # renaming in place, so the CSV is self-explanatory (N_Wells) without
-    # touching that shared helper's expected column name.
+
     summary['count'] = summary['N_Wells']
     summary['sem'] = summary['std'] / np.sqrt(summary['N_Wells'])
     summary['error_value'] = _resolve_error_bar_values(summary, error_bar)
@@ -2052,10 +1963,10 @@ def plot_well_organoid_counts_over_time(base_dir, project_dir, batches_complete_
     summary.to_csv(os.path.join(qc_dir, "organoid_counts_by_group_day.csv"), index=False)
 
     unique_groups = sorted(count_df['Group'].dropna().unique())
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
     fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
-    sns.set_style("whitegrid")
+    _apply_plot_style()
     for group in unique_groups:
         group_df = summary[summary['Group'] == group]
         ax.errorbar(
@@ -2064,48 +1975,34 @@ def plot_well_organoid_counts_over_time(base_dir, project_dir, batches_complete_
             yerr=group_df['error_value'],
             label=group,
             marker='o',
-            markersize=3,
-            capsize=4,
+            markersize=MARKER_SIZE,
+            capsize=ERRORBAR_CAPSIZE,
             color=palette[group],
-            linewidth=1,
+            linewidth=LINE_WIDTH,
         )
-    ax.spines['top'].set_visible(False)    
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
     ax.set_xlabel('Day')
     ax.set_ylabel('Detected organoids per well')
-    ax.legend(frameon=False)
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     _annotate_transitions(ax, transition_days)
     plt.tight_layout()
-    plt.savefig(os.path.join(qc_dir, "organoid_counts_per_well_over_time.png"), bbox_inches='tight', dpi=300)
+    plt.savefig(os.path.join(qc_dir, f"organoid_counts_per_well_over_time.{FILE_FORMAT}"), bbox_inches='tight', dpi=300)
     plt.close()
 
     return count_df
 
 
 # Below this, a post-outlier-removal well organoid count is flagged as a
-# QC warning in audit_outlier_exclusion_by_well -- not a hard cutoff on
-# anything downstream, just a visible signal that a well's mean now rests
-# on very little (or no) surviving data.
+# QC warning in audit_outlier_exclusion_by_well.
 LOW_ORGANOID_COUNT_WARNING_THRESHOLD = 3
 
 
 def export_well_level_summary(base_dir, project_dir, batches_complete_info, features):
     """One row per Batch/Well_ID/Day: every requested feature's well-level
-    mean (post outlier-removal, respecting whatever --remove_outliers
-    configured -- the same data every other well-level plot/statistic in
-    this module already uses) plus Object_Count_In_Image, alongside every
+    mean (post outlier-removal) plus Object_Count_In_Image, alongside every
     batch-level metadata field from batches_complete_info (cell-line,
-    condition, batch_no_plate, ... whatever a project defines) merged in
-    directly -- rather than picking just one group_by's label, so this one
-    dataset can be re-sliced by ANY of a project's grouping variables later
-    without rerunning anything. Individual plotting functions already
-    produce their own one-feature-at-a-time well-level CSVs as a side
-    effect of the figure they draw; this is the directly reusable
-    equivalent that isn't tied to any single plot.
-
+    condition, batch_no_plate, ...).
+    
     Saves plots/plot_data/well_level_summary.csv (or
     plots_<variant>/plot_data/... -- see configure_plots_dirname)."""
     plot_dir = _plots_root(base_dir, project_dir)
@@ -2155,7 +2052,7 @@ def audit_outlier_exclusion_by_well(base_dir, project_dir, batches_complete_info
     survive outlier removal per the currently configured outlier_detection
     settings -- regardless of whether --remove_outliers is actually
     enabled for this run, the same "report what WOULD be flagged"
-    convention plot_variability_and_outliers already uses. Confirms
+    convention plot_variability_and_outliers uses. Confirms
     outlier removal targets individual organoids within a well, never the
     well itself outright: a well is never dropped as a unit, but its
     post-removal organoid count can quietly become very low or zero.
@@ -2188,7 +2085,7 @@ def audit_outlier_exclusion_by_well(base_dir, project_dir, batches_complete_info
                 raw_df = _ensure_metric_identity_columns(pd.read_csv(path))
                 if raw_df.empty or 'Well_ID' not in raw_df.columns:
                     continue
-                filtered_df = filter_by_diameter(raw_df.copy(), day)
+                filtered_df = apply_outlier_removal_gate(raw_df.copy(), day)
 
                 detected_counts = raw_df.groupby('Well_ID', dropna=False).size()
                 after_counts = (
@@ -2244,14 +2141,8 @@ def audit_outlier_exclusion_by_well(base_dir, project_dir, batches_complete_info
 
 def _collect_well_metric_records(base_dir, project_dir, batches_complete_info, metric_column, csv_filename, group_by="batch"):
     """Gather one row per well/image for ``metric_column`` out of
-    ``csv_filename`` (a per-well CSV under each day/batch's
-    ``inference_metrics/`` folder -- e.g. ``well_metrics_summary.csv``'s
-    ``Total_Segmented_Area_um2``), tagged with ``Batch``/``Group``/``Day``
+    ``csv_filename``, tagged with ``Batch``/``Group``/``Day``
     for plotting.
-
-    Unlike ``prepare_morphology_records``/``mask_metrics.csv``, these CSVs
-    are already one row per well/image (never per-object), so there is no
-    aggregation step here -- just collection across days/batches.
     """
     records = []
     for entry in batches_complete_info:
@@ -2278,22 +2169,19 @@ def _collect_well_metric_records(base_dir, project_dir, batches_complete_info, m
     return pd.concat(records, ignore_index=True)
 
 
-def _pairwise_group_tests_by_day(df_all, metric_column, min_wells_for_stats=2):
+def _pairwise_group_tests_by_day(df_all, metric_column, min_wells_for_stats=3):
     """Welch's t-test for every pair of groups present on each day, with
     Benjamini-Hochberg FDR correction applied across ALL of those tests
     together (not per day) -- consistent with ``plot_feature_grid_scatters``'s
     existing convention elsewhere in this module.
 
     A pair is skipped (not tested) when either group has fewer than
-    ``min_wells_for_stats`` samples that day (default 2, the bare minimum
-    Welch's t-test/Hedges' g can even compute) -- recorded as its own
+    ``min_wells_for_stats`` samples that day (default 3, matching
+    DEFAULT_PLOTTING_METADATA's own practical floor in experiment_info.py --
+    not to be confused with 2, the bare minimum Welch's t-test/Hedges' g can
+    mathematically even compute) -- recorded as its own
     entry with ``Skipped_Insufficient_N=True`` and p/g left NaN, and
-    printed, rather than just vanishing from the output with no trace.
-    This is what lets a reader tell "not significant" apart from "never
-    tested" by looking at the output alone. Callers that draw significance
-    brackets should filter these out first (``[s for s in stats_list if
-    not s['Skipped_Insufficient_N']]``); callers writing a stats CSV should
-    keep them so the skip is visible there too.
+    printed.
 
     Returns a list of dicts with ``Day``, ``pair``, ``p_raw``, ``p_corr``,
     ``stars``, ``n1``, ``n2``, ``Skipped_Insufficient_N``."""
@@ -2331,12 +2219,8 @@ def _pairwise_group_tests_by_day(df_all, metric_column, min_wells_for_stats=2):
         # (e.g. every well has exactly 1 organoid on an early single-
         # organoid-per-image day) -- statsmodels' multipletests propagates
         # a single nan through its whole sort-and-correct procedure,
-        # silently turning EVERY OTHER day's p_corr to nan too (confirmed:
-        # this previously wiped out a p_raw=1e-12 result down to "ns").
-        # Excluding nan p-values from the correction array (they carry no
-        # real evidence either way -- identical, zero-spread data isn't a
-        # significant difference by definition) keeps every other test's
-        # correction correct regardless of how many nan entries exist.
+        # silently turning EVERY OTHER day's p_corr to nan too.
+        
         for s in stats_list:
             s['p_corr'] = np.nan
         testable_idx = [idx for idx, s in enumerate(stats_list) if not np.isnan(s['p_raw'])]
@@ -2355,7 +2239,7 @@ def _pairwise_group_tests_by_day(df_all, metric_column, min_wells_for_stats=2):
 def plot_well_metric_over_time(
     base_dir, project_dir, batches_complete_info, metric_column, metric_label,
     csv_filename="well_metrics_summary.csv", group_by="batch", output_prefix=None, error_bar="sem",
-    transition_days=None, min_wells_for_stats=2,
+    transition_days=None, min_wells_for_stats=3,
 ):
     """Line plot (mean +/- error_bar -- "sem" by default, or "sd"/"ci"; see
     _resolve_error_bar_values -- set via plotting_metadata.json's
@@ -2365,10 +2249,7 @@ def plot_well_metric_over_time(
 
     Works for any per-well CSV under ``inference_metrics/`` (one row per
     ``Image_ID``/well) -- in particular ``"Total_Segmented_Area_um2"`` from
-    ``well_metrics_summary.csv`` (the well's total segmented area, robust to
-    touching organoids being merged into one connected component, since it
-    doesn't depend on individual object identity at all -- see
-    ``_summarize_metrics_by_image``). Per-object CSVs like
+    ``well_metrics_summary.csv``. Per-object CSVs like
     ``light_dark_metrics.csv`` are NOT valid here (one row per organoid, not
     per well) -- see ``plot_feature_over_time_by_window`` instead.
 
@@ -2421,30 +2302,31 @@ def plot_well_metric_over_time(
         if s['Day'] not in day_best_stats or s['p_corr'] < day_best_stats[s['Day']]['p_corr']:
             day_best_stats[s['Day']] = s
 
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+    _apply_plot_style()
     for group in unique_groups:
         group_df = summary[summary['Group'] == group]
         ax.errorbar(
             group_df['Day'], group_df['mean'], yerr=group_df['error_value'],
-            label=group, marker='o', capsize=4, color=palette[group], linewidth=2,
+            label=group, marker='o', markersize=MARKER_SIZE, capsize=ERRORBAR_CAPSIZE,
+            color=palette[group], linewidth=LINE_WIDTH,
         )
     for day, s in day_best_stats.items():
         day_sum = summary[summary['Day'] == day]
         if day_sum.empty:
             continue
         y_pos = (day_sum['mean'] + day_sum['error_value']).max()
-        ax.text(day, y_pos * 1.05, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=8, fontweight='bold')
+        ax.text(day, y_pos * 1.05, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=STATS_FONTSIZE)
 
     ax.set_xlabel('Day')
     ax.set_ylabel(metric_label)
-    ax.legend(frameon=False)
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     _annotate_transitions(ax, transition_days)
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"{prefix}_{group_by}_over_time.png")
+    save_path = os.path.join(plot_dir, f"{prefix}_{group_by}_over_time.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -2455,7 +2337,7 @@ def plot_well_metric_over_time(
 def plot_well_metric_boxplots_by_group(
     base_dir, project_dir, days, batches_complete_info, metric_column, metric_label,
     csv_filename="well_metrics_summary.csv", group_by="batch", output_prefix=None,
-    min_wells_for_stats=2,
+    min_wells_for_stats=3,
 ):
     """Per-day box plots comparing groups for a per-well/image metric, with
     pairwise Welch's t-test significance brackets (Benjamini-Hochberg FDR
@@ -2481,7 +2363,7 @@ def plot_well_metric_boxplots_by_group(
         return pd.DataFrame()
 
     unique_groups = sorted(df_all['Group'].dropna().unique())
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
     stats_list = _pairwise_group_tests_by_day(
         df_all[df_all['Day'].isin(plot_days)], metric_column, min_wells_for_stats=min_wells_for_stats
@@ -2491,14 +2373,12 @@ def plot_well_metric_boxplots_by_group(
             os.path.join(plot_data_dir, f"{prefix}_{group_by}_boxplot_stats.csv"), index=False
         )
 
-    n_cols = len(plot_days)
-    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 7), sharey=True)
-    sns.set_style("whitegrid")
-    if n_cols == 1:
-        axes = [axes]
+    n_cols, n_rows = _panel_grid_dims(len(plot_days))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=_grid_panel_size_in(n_cols, n_rows), sharey=True, squeeze=False)
+    _apply_plot_style()
 
     for d_idx, day in enumerate(plot_days):
-        ax = axes[d_idx]
+        ax = axes[d_idx // n_cols][d_idx % n_cols]
         day_df = df_all[df_all['Day'] == day]
         present_groups = [group for group in unique_groups if group in set(day_df['Group'])]
         if day_df.empty or not present_groups:
@@ -2530,13 +2410,16 @@ def plot_well_metric_boxplots_by_group(
             )
             annotator.set_pvalues_and_annotate([p for _, p in day_pairs])
 
-        ax.set_title(f"Day {day}", fontsize=10)
+        ax.set_title(f"Day {day}", fontsize=GRID_TITLE_FONTSIZE)
         ax.set_xlabel("")
-        ax.set_ylabel(metric_label if d_idx == 0 else "")
+        ax.set_ylabel(metric_label if d_idx % n_cols == 0 else "")
         ax.grid(True, alpha=0.3)
 
+    for idx in range(len(plot_days), n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].axis('off')
+
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"{prefix}_{group_by}_boxplots_by_day.png")
+    save_path = os.path.join(plot_dir, f"{prefix}_{group_by}_boxplots_by_day.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -2637,13 +2520,7 @@ def _metric_image_ids(metrics_df):
 
 
 def create_detection_analysis(base_dir, project_dir, batches_complete_info, batches_info, group_by="batch"):
-    """
-    Report detected, undetected, and detected-but-filtered organoids.
-
-    For single-organoid images, expected objects are inferred from raw image IDs,
-    saved masks, or classical 24-well metadata. For multiple-organoid images, the
-    expected object count is not knowable from metadata, so the report focuses on
-    detected and not-considered objects and separately tracks expected images.
+    """Report detected, undetected, and detected-but-filtered organoids.
     """
     qc_dir = os.path.join(_plots_root(base_dir, project_dir), 'quality_control')
     batch_matrix_dir = os.path.join(qc_dir, 'batch_matrices')
@@ -2839,8 +2716,7 @@ def create_detection_analysis(base_dir, project_dir, batches_complete_info, batc
 
 
 def plot_undetected_summary(global_summary, output_dir):
-    """
-    Plot detection QC percentages from create_detection_analysis.
+    """Plot detection QC percentages from create_detection_analysis.
 
     The plot separates true undetected objects from detected objects that were
     later excluded by morphology filters.
@@ -2871,8 +2747,8 @@ def plot_undetected_summary(global_summary, output_dir):
     ).dropna(subset=['Percent'])
     plot_df['QC_Metric'] = plot_df['QC_Metric'].map(percentage_columns)
 
-    plt.figure(figsize=(10,6))
-    sns.set_style("whitegrid")
+    fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+    _apply_plot_style()
     ax = sns.lineplot(
         data=plot_df,
         x='Day',
@@ -2882,22 +2758,23 @@ def plot_undetected_summary(global_summary, output_dir):
         markers=True,
         dashes=False,
         palette="husl",
-        linewidth=2,
+        linewidth=LINE_WIDTH,
+        markersize=MARKER_SIZE,
     )
 
     plt.ylabel('Organoids (%)')
     plt.xlabel('Day')
-    ax.legend(frameon=False, bbox_to_anchor=(1.05, 1), loc='upper left')
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plot_path = os.path.join(output_dir, "detection_qc_percentage_plot.png")
+    plot_path = os.path.join(output_dir, f"detection_qc_percentage_plot.{FILE_FORMAT}")
     plt.savefig(plot_path, bbox_inches='tight', dpi=300)
     plt.close()
 
     undetected_only = global_summary.dropna(subset=['Undetected_Pct'])
     if not undetected_only.empty:
-        plt.figure(figsize=(10, 6))
-        sns.set_style("whitegrid")
+        fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+        _apply_plot_style()
         ax = sns.lineplot(
             data=undetected_only,
             x='Day',
@@ -2905,25 +2782,126 @@ def plot_undetected_summary(global_summary, output_dir):
             hue='Group',
             palette="husl",
             marker='o',
-            linewidth=2,
+            linewidth=LINE_WIDTH,
+            markersize=MARKER_SIZE,
         )
         plt.ylabel('Undetected Organoids (%)')
         plt.xlabel('Day')
-        ax.legend(frameon=False)
+        _place_legend(fig, ax=ax)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "undetected_tiles_percentage_plot.png"), bbox_inches='tight', dpi=300)
+        plt.savefig(os.path.join(output_dir, f"undetected_tiles_percentage_plot.{FILE_FORMAT}"), bbox_inches='tight', dpi=300)
         plt.close()
+
+
+def _parse_day_key(day_key):
+    """'30' -> 30, '16.5' -> 16.5, anything non-numeric returned as-is --
+    JSON object keys are always strings, but every other day value in this
+    codebase (batches_complete_info's own "days" lists, the Day column,
+    f"Day {day}" folder names) is int/float, so a raw string key would
+    silently fail to match any of them."""
+    try:
+        day_float = float(day_key)
+    except (TypeError, ValueError):
+        return day_key
+    return int(day_float) if day_float.is_integer() else day_float
+
+
+def check_expected_organoid_counts(base_dir, project_dir, batches_info):
+    """QC comparing each batch/day's manually-known TRUE organoid count --
+    an optional ``"expected_organoid_counts": {"<day>": <count>, ...}`` key
+    (day keys as strings, since JSON object keys always are; a count covers
+    the total across every image/tile in that batch/day, which reduces to
+    "the" count for the common case of one image per batch/day) -- against
+    how many organoids ``mask_metrics.csv`` actually recorded there (a plain
+    row count: every ``organoid_mode`` already gets one row per detected
+    organoid, "single" or "multiple" alike).
+
+    Opt-in, not a default expectation: most multi-organoid projects have no
+    independent way to know the true per-well count at all, so a batch (or
+    a specific day within one) with no ``expected_organoid_counts`` entry is
+    left out of this report entirely -- absent means "not known", not
+    "zero". Where a count IS supplied, this is a much more direct
+    correctness signal than ``create_detection_analysis``'s own detection
+    QC, whose own docstring notes it "is not knowable from metadata" for
+    multi-organoid images and falls back to tracking images/considered-vs-
+    not-considered objects instead.
+
+    Writes ``quality_control/expected_organoid_count_qc.csv`` and an
+    expected-vs-detected bar chart under the usual plots root; both are
+    skipped (with a print explaining why) if no batch configured any
+    expected counts at all.
+    """
+    qc_dir = os.path.join(_plots_root(base_dir, project_dir), 'quality_control')
+
+    records = []
+    for batch in batches_info:
+        batch_name = batch["batch"]
+        expected_counts = dict(batch.get("expected_organoid_counts") or {})
+        for run in batch.get("segmentation_runs", []) or []:
+            expected_counts.update(run.get("expected_organoid_counts") or {})
+        for day_key, expected_count in expected_counts.items():
+            day = _parse_day_key(day_key)
+            metrics_path = os.path.join(
+                base_dir, project_dir, 'processed_data', f'Day {day}', batch_name,
+                'inference_metrics', 'mask_metrics.csv',
+            )
+            if os.path.exists(metrics_path):
+                detected_count = len(pd.read_csv(metrics_path))
+            else:
+                detected_count = 0
+
+            records.append({
+                'Batch': batch_name, 'Day': day,
+                'Expected_Count': expected_count, 'Detected_Count': detected_count,
+                'Difference': detected_count - expected_count,
+                'Percent_Detected': (100.0 * detected_count / expected_count) if expected_count else float('nan'),
+            })
+
+    if not records:
+        print("No expected_organoid_counts configured for any batch -- skipping expected-count QC.")
+        return pd.DataFrame()
+
+    os.makedirs(qc_dir, exist_ok=True)
+    df_qc = pd.DataFrame(records).sort_values(['Batch', 'Day']).reset_index(drop=True)
+    csv_path = os.path.join(qc_dir, 'expected_organoid_count_qc.csv')
+    df_qc.to_csv(csv_path, index=False)
+
+    print("\n--- Expected vs. detected organoid counts ---")
+    for row in df_qc.itertuples():
+        flag = "✅" if row.Difference == 0 else "⚠️"
+        print(
+            f"  {flag} {row.Batch} Day {row.Day}: expected={row.Expected_Count}, "
+            f"detected={row.Detected_Count} ({row.Percent_Detected:.0f}%)"
+        )
+    print(f"Saved: {csv_path}")
+
+    fig, ax = plt.subplots(figsize=(max(6, 0.6 * len(df_qc)), 5))
+    _apply_plot_style()
+    x = np.arange(len(df_qc))
+    width = 0.35
+    labels = [f"{row.Batch}\nDay {row.Day}" for row in df_qc.itertuples()]
+    ax.bar(x - width / 2, df_qc['Expected_Count'], width, label='Expected', color='#888888')
+    ax.bar(x + width / 2, df_qc['Detected_Count'], width, label='Detected', color='#4C72B0')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=COMPACT_TICK_FONTSIZE)
+    ax.set_ylabel('Organoid count')
+    _place_legend(fig, ax=ax)
+    ax.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    save_path = os.path.join(_plots_root(base_dir, project_dir), f'expected_vs_detected_organoid_counts.{FILE_FORMAT}')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Plot saved: {save_path}")
+
+    return df_qc
 
 
 def _fit_well_growth_rates(base_dir, project_dir, batches_complete_info, feature, group_by, min_points):
     """Shared by analyze_growth_trajectories and
     analyze_growth_rate_by_two_factors -- loads each well's full timecourse
     for ``feature`` and fits a per-well exponential growth model
-    area(t) = area_0 * exp(k*t) (see analyze_growth_trajectories's own
-    docstring for the full Well_ID/Organoid_Mode-averaging rationale, which
-    applies identically here since this is the same fit, just factored out
-    so a second caller can reuse it without duplicating ~50 lines).
+    area(t) = area_0 * exp(k*t).
 
     Returns (df_all, growth_df); writes no CSVs and prints nothing --
     callers own their own output naming/side effects."""
@@ -2940,18 +2918,9 @@ def _fit_well_growth_rates(base_dir, project_dir, batches_complete_info, feature
             if df.empty or feature not in df.columns:
                 continue
 
-            df = filter_by_diameter(df, day)
+            df = apply_outlier_removal_gate(df, day)
             if df.empty:
                 continue
-
-            # One row per well already for organoid_mode == "single" (mean
-            # is then a no-op safety net). For organoid_mode == "multiple",
-            # this is a genuine per-day mean across every organoid detected
-            # in that well's image -- see analyze_growth_trajectories's own
-            # docstring for why the well identity stays trackable even
-            # though individual organoids within it are not. Object_Count_
-            # In_Image and Organoid_Mode are carried through per well/day
-            # so the two cases remain distinguishable in the saved records.
             day_df = df.groupby('Well_ID', dropna=False)[feature].mean().reset_index()
             counts = df.groupby('Well_ID', dropna=False).size().reset_index(name='Object_Count_In_Image')
             day_df = day_df.merge(counts, on='Well_ID', how='left')
@@ -3000,29 +2969,22 @@ def _fit_well_growth_rates(base_dir, project_dir, batches_complete_info, feature
 def analyze_growth_trajectories(
     base_dir, project_dir, batches_complete_info, feature="Area_um2",
     metric_label="Area (um^2)", group_by="batch", min_points=3,
-    transition_days=None, min_wells_for_stats=2, show_pairwise_stats=True,
+    transition_days=None, min_wells_for_stats=3, show_pairwise_stats=True,
 ):
     """
     Track each physical well across its full timecourse and estimate a
     per-well growth rate.
 
-    Well_ID (derived from fixed tile-position arithmetic in
-    _get_image_measurement_context -- Plate_Index/Well_Index come from the
-    tile number modulo images_per_plate, not from a sequential counter over
-    however many images happened to be detected that day) reliably ties the
-    same physical well to itself across days, for both Organoid_Mode
-    values. What differs between the two modes is what "the well's value"
+    Well_ID reliably ties thesame physical well to itself across days, 
+    for both Organoid_Mode values.
+    What differs between the two modes is what "the well's value"
     on a given day means: for Organoid_Mode == "single" it is that one
     organoid's own measurement; for Organoid_Mode == "multiple" (crowded
     multi-organoid wells, where individual organoids have no stable
     identity from one day to the next) it is the *mean* of that day's
     per-organoid measurements across every organoid detected in that well's
-    image. Averaging over the well's organoids on each day sidesteps the
-    lack of individual-organoid identity -- the well itself is still a
-    trackable unit even when the organoids inside it are not -- so a
-    per-well growth rate can be fit for "multiple" wells too, just on the
-    well's mean-organoid trajectory rather than a single organoid's. Both
-    modes are pooled into the same fit below; the per-well output rows
+    image.
+    Both modes are pooled into the same fit below; the per-well output rows
     carry Organoid_Mode and Object_Count_In_Image (organoids averaged that
     day; always 1 for single mode) so the two cases stay distinguishable
     downstream.
@@ -3044,7 +3006,7 @@ def analyze_growth_trajectories(
     drawing them as brackets on the violin plot -- for group_by columns
     with enough categories (e.g. a synthetic two-factor "condition x lab"
     label) that an every-pair bracket for each one would stack far past the
-    top of the plot and become unreadable rather than informative.
+    top of the plot and become unreadable.
     """
     plot_dir = _plots_root(base_dir, project_dir)
     plot_data_dir = os.path.join(plot_dir, 'plot_data')
@@ -3064,13 +3026,13 @@ def analyze_growth_trajectories(
         print(f"No wells had >= {min_points} timepoints for growth rate fitting ({feature}).")
 
     unique_groups = sorted(df_all['Group'].dropna().unique())
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
     # --- Plot 1: individual trajectories ("spaghetti plot") + group mean ---
     plot_unit_scale = AREA_UM2_TO_MM2 if feature == "Area_um2" else 1.0
     plot_metric_label = _um2_label_to_mm2(metric_label) if feature == "Area_um2" else metric_label
     fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
-    sns.set_style("whitegrid")
+    _apply_plot_style()
     for group in unique_groups:
         group_df = df_all[df_all['Group'] == group]
         for _, well_df in group_df.groupby(['Batch', 'Well_ID']):
@@ -3078,42 +3040,27 @@ def analyze_growth_trajectories(
             ax.plot(well_df['Day'], well_df[feature] * plot_unit_scale, color=palette[group], alpha=0.1, linewidth=0.5, zorder=0.5)
 
         group_summary = group_df.groupby('Day')[feature].mean().reset_index()
-        ax.plot(group_summary['Day'], group_summary[feature] * plot_unit_scale, color=palette[group], linewidth=1, marker='o', label=group, zorder=2, markersize=2)
+        ax.plot(group_summary['Day'], group_summary[feature] * plot_unit_scale, color=palette[group], linewidth=LINE_WIDTH, marker='o', label=group, zorder=2, markersize=MARKER_SIZE)
 
     ax.set_xlabel('Day')
-    ax.spines['bottom'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
     ax.set_ylabel(plot_metric_label)
-    ax.legend(frameon=False)
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     _annotate_transitions(ax, transition_days)
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"{feature}_growth_trajectories_{group_by}.png")
+    save_path = os.path.join(plot_dir, f"{feature}_growth_trajectories_{group_by}.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
 
     # --- Plot 2: per-well growth rate by group ---
     if not growth_df.empty:
-        # Same dimensions/legend approach as analyze_expansion_rate_by_window's
-        # boxplot grid: a bottom-reserved margin for a color legend instead of
-        # an inline one, and x-tick labels hidden entirely (the legend is
-        # enough to identify each group -- see the identical choice there).
-        # Width is half of plot_feature_grid_scatters's (STANDARD_FIG_WIDTH_IN
-        # split across MAX_PANEL_COLS panels), matching one grid-scatterplot
-        # column's width per explicit instruction -- this figure has only one
-        # "panel" (all groups in a single axes), so it doesn't need the full
-        # standard width the multi-day/window figures share. LEGEND_RESERVE_IN
-        # matches plot_feature_grid_scatters's own value exactly (rather than
-        # analyze_expansion_rate_by_window's larger one) for full height
-        # consistency with one of that figure's own panels.
+
         LEGEND_RESERVE_IN = 0.6
-        fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN*3 / MAX_PANEL_COLS, STANDARD_FIG_HEIGHT_IN))
+        fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN , STANDARD_FIG_HEIGHT_IN))
         bottom_frac = LEGEND_RESERVE_IN / (STANDARD_FIG_HEIGHT_IN + LEGEND_RESERVE_IN)
         gs = fig.add_gridspec(1, 1, top=0.95, bottom=bottom_frac, hspace=0.15, wspace=0.3)
-        sns.set_style("whitegrid")
+        _apply_plot_style()
         ax = fig.add_subplot(gs[0, 0])
         sns.violinplot(
             data=growth_df, x='Group', y='Growth_Rate_Per_Day', order=unique_groups,
@@ -3134,20 +3081,11 @@ def analyze_growth_trajectories(
             ax.hlines(y=mean_val, xmin=x_pos - 0.25, xmax=x_pos + 0.25, color="black", lw=1, zorder=5)
 
         if len(unique_groups) >= 2:
-            # Reuses _pairwise_group_tests_by_day (all-pairs Welch's t-test +
-            # Hedges' g, one shared FDR correction) against a constant fake
-            # "Day" column -- growth_df has no day dimension of its own (one
-            # rate per well already), but the all-pairs-plus-FDR logic is
-            # otherwise identical to every other group-comparison figure in
-            # this module, so it's reused rather than duplicated. Handles
-            # any number of groups, not just exactly two (see boxplots_by_window
-            # for the same stacked-bracket convention with 3+ groups).
+
             pair_stats = _pairwise_group_tests_by_day(
                 growth_df.assign(Day=0), 'Growth_Rate_Per_Day', min_wells_for_stats=min_wells_for_stats
             )
-            # Skipped (insufficient-N) entries are already reported by
-            # _pairwise_group_tests_by_day itself -- excluded here so they
-            # don't also get a NaN-valued bracket drawn on the figure below.
+            # Skipped (insufficient-N) entries are already reported by _pairwise_group_tests_by_day
             pair_stats = [s for s in pair_stats if not s['Skipped_Insufficient_N']]
             for s in pair_stats:
                 print(
@@ -3164,18 +3102,12 @@ def analyze_growth_trajectories(
                 h = y_max + (s_idx * y_offset)
                 ax.plot([x1, x1, x2, x2], [h, h + y_offset * 0.2, h + y_offset * 0.2, h], lw=0.5, color='black')
                 ax.text((x1 + x2) * 0.5, h + y_offset * 0.2, _stat_annotation_text(s),
-                        ha='center', va='bottom', fontsize=stats_fontsize)
+                        ha='center', va='bottom', fontsize=STATS_FONTSIZE)
 
         ax.set_xlabel("")
         ax.set_ylabel(f"Growth rate ({metric_label}/day)")
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelbottom=False)
-        # No frame -- same spine-hiding as plot_feature_grid_scatters's
-        # panels (only the left spine stays, for the y-axis).
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
 
         group_handles = {
             group: mlines.Line2D(
@@ -3185,15 +3117,9 @@ def analyze_growth_trajectories(
             for group in unique_groups
         }
         handles = [group_handles[k] for k in sorted(group_handles.keys())]
-        # Wrapped to at most 2 columns (unlike the multi-panel figures'
-        # single-row legend) -- this figure is only half their width, so a
-        # single row of every group's full name would force savefig's
-        # bbox_inches='tight' to widen the saved image well past the
-        # intended half-width to fit the legend.
-        fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.02),
-                   ncol=min(len(handles), 4), frameon=False, title=None)
+        _place_legend(fig, handles=handles, ncol=min(len(handles), 3))
 
-        save_path = os.path.join(plot_dir, f"{feature}_growth_rate_by_{group_by}.png")
+        save_path = os.path.join(plot_dir, f"{feature}_growth_rate_by_{group_by}.{FILE_FORMAT}")
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"Plot saved: {save_path}")
@@ -3204,10 +3130,10 @@ def analyze_growth_trajectories(
 def analyze_growth_rate_by_two_factors(
     base_dir, project_dir, batches_complete_info, feature="Area_um2",
     metric_label="Area (um^2)", primary_factor="clone", secondary_factor="lab",
-    min_points=3, min_wells_for_stats=2,
+    min_points=3, min_wells_for_stats=3,
 ):
     """
-    Per-well growth-rate violin comparing two grouping variables at once,
+    Per-well growth-rate violin comparing two grouping variables 
     as a dodge-style grouped violin: ``primary_factor`` along the x-axis
     (e.g. clone), ``secondary_factor`` as a hue-dodged sub-violin within
     each x-axis category (e.g. LabA/LabB side by side within each clone).
@@ -3217,25 +3143,6 @@ def analyze_growth_rate_by_two_factors(
     identical either way; this function only differs in how the result is
     grouped/plotted (two independent factors at once, rather than one
     factor, or two factors concatenated into a single flat axis).
-
-    A flat "all pairs" comparison across every (primary, secondary)
-    combination grows combinatorially and stops being readable past a
-    handful of categories (e.g. 4 clones x 2 labs = 28 pairs -- see
-    analyze_growth_trajectories's own single-axis violin, which draws
-    exactly that). Statistical testing here is restricted instead to the
-    one question a 2-factor design like this actually asks directly: does
-    secondary_factor (e.g. lab) shift the growth rate within each
-    primary_factor category (e.g. clone)? That is exactly
-    _pairwise_group_tests_by_day's own "every pair of groups present on
-    each day" logic with the two factors swapped in for "group"/"day" --
-    primary_factor's categories standing in for "day" and
-    secondary_factor's two levels standing in for "group" -- reused as-is
-    rather than reimplemented, which is also what gives BH-FDR correction
-    across exactly those within-category comparisons (not against every
-    other figure's tests, and not against the combinatorial full pair set
-    this function deliberately avoids drawing). secondary_factor must have
-    exactly 2 levels for this to be well-defined; skipped (insufficient-N)
-    categories are reported by _pairwise_group_tests_by_day itself.
 
     Saves the per-well growth-rate summary (with both factor columns, one
     row per well) as a CSV under plots/plot_data/, plus the grouped violin
@@ -3271,13 +3178,13 @@ def analyze_growth_rate_by_two_factors(
     )
     print(f"Growth rate summary ({feature}, {primary_factor} x {secondary_factor}): {len(growth_df)} wells.")
 
-    palette = dict(zip(secondary_levels, sns.color_palette("husl", len(secondary_levels))))
+    palette = dict(zip(secondary_levels, sns.color_palette(COLOR_PALETTE, len(secondary_levels))))
 
     LEGEND_RESERVE_IN = 0.6
     fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
     bottom_frac = LEGEND_RESERVE_IN / (STANDARD_FIG_HEIGHT_IN + LEGEND_RESERVE_IN)
     gs = fig.add_gridspec(1, 1, top=0.95, bottom=bottom_frac, hspace=0.15, wspace=0.3)
-    sns.set_style("whitegrid")
+    _apply_plot_style()
     ax = fig.add_subplot(gs[0, 0])
 
     VIOLIN_WIDTH = 0.8
@@ -3287,19 +3194,15 @@ def analyze_growth_rate_by_two_factors(
         width=VIOLIN_WIDTH, legend=False, ax=ax,
         inner=None, cut=0, alpha=0.35, linewidth=0.8, zorder=1,
     )
-    # Colored by secondary_factor (not a fixed black) and jittered, matching
-    # analyze_growth_trajectories's own stripplot exactly.
+    # Colored by secondary_factor and jittered, matching
+    # analyze_growth_trajectories's own stripplot.
     sns.stripplot(
         data=growth_df, x=primary_factor, y='Growth_Rate_Per_Day', order=primary_levels,
         hue=secondary_factor, hue_order=secondary_levels, palette=palette, dodge=True,
         jitter=True, alpha=0.8, s=2, ax=ax, legend=False, zorder=2,
     )
 
-    # Seaborn's own dodge offset for a 2-level hue at width=VIOLIN_WIDTH --
-    # computed explicitly (the standard categorical-dodge formula: level i
-    # of n sits at width * ((i - (n-1)/2) / n) from the category center)
-    # rather than read back from the Axes, so mean lines/brackets land
-    # exactly on each dodged sub-violin regardless of draw order.
+    # Seaborn's dodge offset for a 2-level hue at width=VIOLIN_WIDTH.
     n_hues = len(secondary_levels)
     hue_offsets = {
         level: VIOLIN_WIDTH * ((i - (n_hues - 1) / 2) / n_hues)
@@ -3337,10 +3240,7 @@ def analyze_growth_rate_by_two_factors(
             f"Hedges' g = {s['hedges_g']:.3f} (n={s['n1']} vs {s['n2']} wells)"
         )
 
-    # Each bracket is placed above its own primary_factor category's own
-    # max value (not a single shared/stacked height across every category
-    # the way analyze_growth_trajectories's flat all-pairs version does) --
-    # there is at most one bracket per category here, so nothing to stack.
+    # Each bracket is placed above its own primary_factor category's own max value.
     for s in pair_stats:
         p_level = s['Day']
         p_idx = primary_levels.index(p_level)
@@ -3350,28 +3250,20 @@ def analyze_growth_rate_by_two_factors(
         h = cell_vals.max() + y_offset
         ax.plot([x1, x1, x2, x2], [h, h + y_offset * 0.3, h + y_offset * 0.3, h], lw=0.5, color='black')
         ax.text((x1 + x2) * 0.5, h + y_offset * 0.3, _stat_annotation_text(s),
-                ha='center', va='bottom', fontsize=stats_fontsize)
+                ha='center', va='bottom', fontsize=STATS_FONTSIZE)
 
     ax.set_xlabel("")
     ax.set_ylabel(f"Growth rate ({metric_label}/day)")
     ax.grid(True, alpha=0.3)
-    ax.spines['bottom'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
 
-    # Legend covers secondary_factor only (2 entries) -- primary_factor is
-    # already directly readable off the x-axis tick labels, unlike
-    # analyze_growth_trajectories's flat version which hides tick labels
-    # entirely and relies on the legend for every category.
+    # Legend covers secondary_factor only (2 entries).
     handles = [
         mlines.Line2D([], [], color=palette[level], marker='o', linestyle='None', markersize=10, label=level)
         for level in secondary_levels
     ]
-    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.02),
-               ncol=len(handles), frameon=False, title=None)
+    _place_legend(fig, handles=handles, ncol=len(handles))
 
-    save_path = os.path.join(plot_dir, f"{feature}_growth_rate_by_{primary_factor}_{secondary_factor}.png")
+    save_path = os.path.join(plot_dir, f"{feature}_growth_rate_by_{primary_factor}_{secondary_factor}.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -3379,22 +3271,159 @@ def analyze_growth_rate_by_two_factors(
     return growth_df
 
 
+def analyze_feature_at_day_by_two_factors(
+    base_dir, project_dir, batches_complete_info, day, feature="Area_um2",
+    metric_label="Area (um^2)", primary_factor="clone", secondary_factor="lab",
+    min_wells_for_stats=3,
+):
+    """Per-well ``feature`` value at a single ``day``, as a two-factor dodge
+    violin -- ``primary_factor`` along the x-axis (e.g. clone),
+    ``secondary_factor`` as a hue-dodged sub-violin within each x-axis
+    category (e.g. LabA/LabB side by side within each clone). 
+
+    Saves the per-well summary (with both factor columns) as a CSV under
+    plots/plot_data/, plus the grouped violin figure.
+    """
+    plot_dir = _plots_root(base_dir, project_dir)
+    plot_data_dir = os.path.join(plot_dir, 'plot_data')
+    os.makedirs(plot_data_dir, exist_ok=True)
+
+    records = []
+    for entry in batches_complete_info:
+        batch = entry['batch']
+        if day not in entry['days']:
+            continue
+        label = entry.get(primary_factor, batch)
+
+        path = os.path.join(base_dir, project_dir, 'processed_data', f'Day {day}', batch, 'inference_metrics', 'mask_metrics.csv')
+        if not os.path.exists(path):
+            continue
+
+        df = pd.read_csv(path)
+        df = _ensure_metric_identity_columns(df)
+        if df.empty or feature not in df.columns:
+            continue
+
+        df = apply_outlier_removal_gate(df, day)
+        if df.empty:
+            continue
+
+        day_df = df.groupby('Well_ID', dropna=False)[feature].mean().reset_index()
+        day_df['Batch'] = batch
+        day_df[primary_factor] = label
+        day_df[secondary_factor] = entry.get(secondary_factor, batch)
+        records.append(day_df)
+
+    if not records:
+        print(f"No data found for {feature} at Day {day} ({primary_factor} x {secondary_factor}).")
+        return pd.DataFrame()
+
+    day_df = pd.concat(records, ignore_index=True)
+
+    secondary_levels = sorted(day_df[secondary_factor].dropna().unique())
+    if len(secondary_levels) != 2:
+        print(
+            f"analyze_feature_at_day_by_two_factors requires exactly 2 {secondary_factor} levels, "
+            f"found {len(secondary_levels)} ({secondary_levels}) -- skipping."
+        )
+        return day_df
+
+    primary_levels = sorted(day_df[primary_factor].dropna().unique())
+    day_df.to_csv(
+        os.path.join(plot_data_dir, f"{feature}_day{day}_by_{primary_factor}_{secondary_factor}_summary.csv"),
+        index=False,
+    )
+    print(f"{feature} at Day {day} ({primary_factor} x {secondary_factor}): {len(day_df)} wells.")
+
+    palette = dict(zip(secondary_levels, sns.color_palette(COLOR_PALETTE, len(secondary_levels))))
+
+    LEGEND_RESERVE_IN = 0.6
+    fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+    bottom_frac = LEGEND_RESERVE_IN / (STANDARD_FIG_HEIGHT_IN + LEGEND_RESERVE_IN)
+    gs = fig.add_gridspec(1, 1, top=0.95, bottom=bottom_frac, hspace=0.15, wspace=0.3)
+    _apply_plot_style()
+    ax = fig.add_subplot(gs[0, 0])
+
+    VIOLIN_WIDTH = 0.8
+    sns.violinplot(
+        data=day_df, x=primary_factor, y=feature, order=primary_levels,
+        hue=secondary_factor, hue_order=secondary_levels, palette=palette, dodge=True,
+        width=VIOLIN_WIDTH, legend=False, ax=ax,
+        inner=None, cut=0, alpha=0.35, linewidth=0.8, zorder=1,
+    )
+    sns.stripplot(
+        data=day_df, x=primary_factor, y=feature, order=primary_levels,
+        hue=secondary_factor, hue_order=secondary_levels, palette=palette, dodge=True,
+        jitter=True, alpha=0.8, s=2, ax=ax, legend=False, zorder=2,
+    )
+
+    n_hues = len(secondary_levels)
+    hue_offsets = {
+        level: VIOLIN_WIDTH * ((i - (n_hues - 1) / 2) / n_hues)
+        for i, level in enumerate(secondary_levels)
+    }
+
+    for p_idx, p_level in enumerate(primary_levels):
+        for h_level, h_offset in hue_offsets.items():
+            cell = day_df[(day_df[primary_factor] == p_level) & (day_df[secondary_factor] == h_level)]
+            if cell.empty:
+                continue
+            x_pos = p_idx + h_offset
+            ax.hlines(
+                y=cell[feature].mean(), xmin=x_pos - VIOLIN_WIDTH / n_hues * 0.4,
+                xmax=x_pos + VIOLIN_WIDTH / n_hues * 0.4, color="black", lw=1, zorder=5,
+            )
+
+    day_stub = day_df.rename(columns={primary_factor: 'Day', secondary_factor: 'Group'})
+    all_pair_stats = _pairwise_group_tests_by_day(day_stub, feature, min_wells_for_stats=min_wells_for_stats)
+    pd.DataFrame(all_pair_stats).rename(columns={'Day': primary_factor}).to_csv(
+        os.path.join(plot_data_dir, f"{feature}_day{day}_by_{primary_factor}_{secondary_factor}_stats.csv"),
+        index=False,
+    )
+    pair_stats = [s for s in all_pair_stats if not s['Skipped_Insufficient_N']]
+    for s in pair_stats:
+        print(
+            f"{feature} at Day {day}, {primary_factor}={s['Day']}, "
+            f"{s['pair'][0]} vs {s['pair'][1]}: p_corr = {s['p_corr']:.5f} ({s['stars']}), "
+            f"Hedges' g = {s['hedges_g']:.3f} (n={s['n1']} vs {s['n2']} wells)"
+        )
+
+    for s in pair_stats:
+        p_level = s['Day']
+        p_idx = primary_levels.index(p_level)
+        x1, x2 = p_idx + hue_offsets[s['pair'][0]], p_idx + hue_offsets[s['pair'][1]]
+        cell_vals = day_df.loc[day_df[primary_factor] == p_level, feature]
+        y_offset = abs(cell_vals.max()) * 0.15 if len(cell_vals) and cell_vals.max() else 0.01
+        h = cell_vals.max() + y_offset
+        ax.plot([x1, x1, x2, x2], [h, h + y_offset * 0.3, h + y_offset * 0.3, h], lw=0.5, color='black')
+        ax.text((x1 + x2) * 0.5, h + y_offset * 0.3, _stat_annotation_text(s),
+                ha='center', va='bottom', fontsize=STATS_FONTSIZE)
+
+    ax.set_xlabel("")
+    ax.set_ylabel(f"{metric_label} (Day {day})")
+    ax.grid(True, alpha=0.3)
+
+    handles = [
+        mlines.Line2D([], [], color=palette[level], marker='o', linestyle='None', markersize=10, label=level)
+        for level in secondary_levels
+    ]
+    _place_legend(fig, handles=handles, ncol=len(handles))
+
+    save_path = os.path.join(plot_dir, f"{feature}_day{day}_by_{primary_factor}_{secondary_factor}.{FILE_FORMAT}")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Plot saved: {save_path}")
+
+    return day_df
+
+
 def plot_feature_correlation_heatmap(
     base_dir, project_dir, batches_complete_info, features, feature_labels=None,
     day=None, method="spearman",
 ):
-    """
-    Pairwise correlation heatmap across every requested morphology feature,
+    """Pairwise correlation heatmap across every requested morphology feature,
     pooling every batch/day's object-level mask_metrics.csv rows together
     (or a single day, if ``day`` is given).
-
-    Spearman (the default) rather than Pearson, since several of these
-    features are related by a deterministic but nonlinear monotonic
-    transform (e.g. Aspect_Ratio and Eccentricity, both pure functions of
-    the same major/minor-axis ratio), which Pearson can substantially
-    underestimate -- the same convention used by
-    _select_non_redundant_features to choose the PCA plot's feature subset,
-    so this heatmap doubles as a visual explanation of that selection.
     """
     plot_dir = _plots_root(base_dir, project_dir)
     plot_data_dir = os.path.join(plot_dir, 'plot_data')
@@ -3412,7 +3441,7 @@ def plot_feature_correlation_heatmap(
             path = os.path.join(base_dir, project_dir, 'processed_data', f'Day {d}', batch, 'inference_metrics', 'mask_metrics.csv')
             if os.path.exists(path):
                 df = pd.read_csv(path)
-                df = filter_by_diameter(df, d)
+                df = apply_outlier_removal_gate(df, d)
                 if not df.empty:
                     records.append(df)
 
@@ -3433,6 +3462,7 @@ def plot_feature_correlation_heatmap(
     fig, ax = plt.subplots(figsize=(1.0 * len(available) + 2, 0.9 * len(available) + 1.5))
     sns.heatmap(
         corr, annot=True, fmt=".2f", cmap="RdBu_r", vmin=-1, vmax=1,
+        annot_kws={"size": HEATMAP_ANNOT_FONTSIZE},
         xticklabels=display_labels, yticklabels=display_labels,
         square=True, cbar_kws={'label': f"{method.capitalize()} r"}, ax=ax,
     )
@@ -3442,7 +3472,7 @@ def plot_feature_correlation_heatmap(
         title += f", Day {day}"
     ax.set_title(title)
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"feature_correlation_heatmap_{method}{suffix}.png")
+    save_path = os.path.join(plot_dir, f"feature_correlation_heatmap_{method}{suffix}.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -3462,8 +3492,7 @@ def plot_feature_over_time_by_window(
     group_by="batch", csv_filename="mask_metrics.csv", aggregation_level="object", error_bar="sem",
     transition_days=None,
 ):
-    """
-    Longitudinal line plot (mean +/- error_bar -- "sem" by default, or
+    """Longitudinal line plot (mean +/- error_bar -- "sem" by default, or
     "sd"/"ci"; see _resolve_error_bar_values -- set via
     plotting_metadata.json's "line_plot_error_bar") of ``feature`` across
     every day in ``windows`` (a list of day-lists, e.g. developmental
@@ -3476,7 +3505,7 @@ def plot_feature_over_time_by_window(
     folder -- ``mask_metrics.csv`` by default, but also works for
     ``optical_density_metrics.csv`` (Optical_Density/Core_Darkening_Index),
     since both share the same Batch/Day/Image_ID/Well_ID/Organoid_ID
-    identity columns (and Area_um2/Diameter_um, for filter_by_diameter)
+    identity columns (and Area_um2/Diameter_um, for apply_outlier_removal_gate)
     that ``prepare_morphology_records`` expects.
 
     This only visualizes the trend -- see ``plot_feature_boxplots_by_window``
@@ -3531,38 +3560,40 @@ def plot_feature_over_time_by_window(
     )
 
     unique_groups = sorted(df_all['Group'].dropna().unique())
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
 
     fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
-    sns.set_style("whitegrid")
+    _apply_plot_style()
     for group in unique_groups:
         data = summary[summary['Group'] == group]
         ax.errorbar(
             data['Day'], data['mean'], yerr=data['error_value'],
-            label=group, marker='o', capsize=4, color=palette[group], linewidth=1, markersize=3,
+            label=group, marker='o', capsize=ERRORBAR_CAPSIZE, color=palette[group],
+            linewidth=LINE_WIDTH, markersize=MARKER_SIZE,
         )
 
     for window in windows[1:]:
         ax.axvline(window[0], color='gray', linestyle='--', linewidth=1, alpha=0.6, zorder=0)
 
     # Same small-annotation convention as _annotate_transitions's own
-    # rotated labels (fontsize=7, alpha=0.8) -- both are vertical-line +
-    # text markers on this same axes, so they should read as one visual
-    # "meta-annotation" style rather than two different sizes/weights.
+    # rotated labels (ANNOTATION_FONTSIZE, alpha=0.8) -- both are
+    # vertical-line + text markers on this same axes, so they should read as
+    # one visual "meta-annotation" style rather than two different
+    # sizes/weights.
     y_top = ax.get_ylim()[1]
     for window in windows:
         ax.text(
             window[0], y_top, _window_label(window),
-            rotation=90, va='top', ha='right', fontsize=7, color='gray', alpha=0.8,
+            rotation=90, va='top', ha='right', fontsize=ANNOTATION_FONTSIZE, color='gray', alpha=0.8,
         )
 
     ax.set_xlabel('Day')
     ax.set_ylabel(metric_label)
-    ax.legend(frameon=False)
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     _annotate_transitions(ax, transition_days)
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"{feature}_{aggregation_level}_{group_by}_by_window_over_time.png")
+    save_path = os.path.join(plot_dir, f"{feature}_{aggregation_level}_{group_by}_by_window_over_time.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -3572,18 +3603,11 @@ def plot_feature_over_time_by_window(
 
 def plot_feature_boxplots_by_window(
     base_dir, project_dir, batches_complete_info, windows, feature, metric_label,
-    group_by="batch", csv_filename="mask_metrics.csv", min_wells_for_stats=2,
+    group_by="batch", csv_filename="mask_metrics.csv", min_wells_for_stats=3,
 ):
     """
     Grid of violin+strip plots comparing groups for ``feature``: one ROW per
-    developmental window, one COLUMN per day within that window. Days are
-    NOT pooled together -- each day is its own independent comparison (own
-    stats, own panel); the window only decides which days share a row for
-    side-by-side visual comparison (and, since ``sharey='row'``, a common
-    y-axis scale within that row -- rows are not forced onto one shared
-    scale, since absolute values can shift a lot between windows spanning
-    different developmental stages). Windows with fewer days than the
-    widest one get blank trailing panels.
+    developmental window, one COLUMN per day within that window.
 
     Pairwise Welch's t-tests (Benjamini-Hochberg FDR corrected across every
     day x pair test in the whole figure) and Hedges' g effect sizes -- the
@@ -3692,12 +3716,12 @@ def plot_feature_boxplots_by_window(
     all_possible_groups = sorted({
         group for df in day_data.values() for group in df['Group'].dropna().unique()
     })
-    palette = dict(zip(all_possible_groups, sns.color_palette("husl", len(all_possible_groups))))
+    palette = dict(zip(all_possible_groups, sns.color_palette(COLOR_PALETTE, len(all_possible_groups))))
 
     n_rows = len(windows)
     n_cols = max(len(window) for window in windows)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(STANDARD_FIG_WIDTH_IN/3*n_cols, STANDARD_FIG_HEIGHT_IN * n_rows), sharey='row', squeeze=False)
-    sns.set_style("whitegrid")
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=_grid_panel_size_in(n_cols, n_rows), sharey='row', squeeze=False)
+    _apply_plot_style()
 
     group_handles = {}
     for w_idx, window in enumerate(windows):
@@ -3736,11 +3760,10 @@ def plot_feature_boxplots_by_window(
                 x1, x2 = u_groups.index(g1), u_groups.index(g2)
                 h = y_max + (s_idx * y_offset)
                 ax.plot([x1, x1, x2, x2], [h, h + y_offset * 0.2, h + y_offset * 0.2, h], lw=0.5, color='black')
-                ax.text((x1 + x2) * 0.5, h + y_offset * 0.2, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=stats_fontsize)
+                ax.text((x1 + x2) * 0.5, h + y_offset * 0.2, _stat_annotation_text(s), ha='center', va='bottom', color='black', fontsize=STATS_FONTSIZE)
 
             if col_idx > 0:
                 ax.set_ylabel("")
-                ax.spines['left'].set_visible(False)
                 ax.tick_params(labelleft=False)
             else:
                 ax.set_ylabel(metric_label)
@@ -3748,11 +3771,7 @@ def plot_feature_boxplots_by_window(
             ax.tick_params(labelbottom=False)
             ax.grid(True, alpha=0.3)
             ax.set_xlabel("")
-            ax.set_title(f"Day {day}", fontsize=10)
-            ax.spines['bottom'].set_visible(False)
-            ax.spines['left'].set_visible(False)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+            ax.set_title(f"Day {day}", fontsize=GRID_TITLE_FONTSIZE)
 
             for group in u_groups:
                 if group not in group_handles:
@@ -3771,10 +3790,9 @@ def plot_feature_boxplots_by_window(
         #)
 
     handles = [group_handles[k] for k in sorted(group_handles.keys())]
-    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.02),
-               ncol=len(handles), frameon=False, title=None)
+    _place_legend(fig, handles=handles, ncol=len(handles))
 
-    save_path = os.path.join(plot_dir, f"{feature}_{group_by}_boxplots_by_window.png")
+    save_path = os.path.join(plot_dir, f"{feature}_{group_by}_boxplots_by_window.{FILE_FORMAT}")
     plt.tight_layout(rect=[0.03, 0.03, 1, 1])
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -3786,7 +3804,7 @@ def plot_feature_boxplots_by_window(
 def analyze_expansion_rate_by_window(
     base_dir, project_dir, batches_complete_info, windows, feature="Area_um2",
     metric_label="Area (um^2)", group_by="batch", min_points=2, error_bar="sem",
-    min_wells_for_stats=2,
+    min_wells_for_stats=3,
 ):
     """
     Per-well expansion rate within each developmental window. Pools
@@ -3833,12 +3851,10 @@ def analyze_expansion_rate_by_window(
             df = _ensure_metric_identity_columns(df)
             if df.empty or feature not in df.columns:
                 continue
-            df = filter_by_diameter(df, day)
+            df = apply_outlier_removal_gate(df, day)
             if df.empty:
                 continue
-            # See analyze_growth_trajectories for why this per-well mean is
-            # a no-op for organoid_mode == "single" and a genuine
-            # mean-across-organoids for organoid_mode == "multiple".
+
             day_df = df.groupby('Well_ID', dropna=False)[feature].mean().reset_index()
             counts = df.groupby('Well_ID', dropna=False).size().reset_index(name='Object_Count_In_Image')
             day_df = day_df.merge(counts, on='Well_ID', how='left')
@@ -3894,7 +3910,7 @@ def analyze_expansion_rate_by_window(
     rate_df.to_csv(os.path.join(plot_data_dir, f"{feature}_expansion_rate_by_window.csv"), index=False)
 
     unique_groups = sorted(rate_df['Group'].dropna().unique())
-    palette = dict(zip(unique_groups, sns.color_palette("husl", len(unique_groups))))
+    palette = dict(zip(unique_groups, sns.color_palette(COLOR_PALETTE, len(unique_groups))))
     window_labels = [_window_label(w) for w in windows]
 
     # --- Plot 1: mean rate +/- error_bar across windows ---
@@ -3902,22 +3918,23 @@ def analyze_expansion_rate_by_window(
     summary['sem'] = summary['std'] / np.sqrt(summary['count'])
     summary['error_value'] = _resolve_error_bar_values(summary, error_bar)
 
-    fig, ax = plt.subplots(figsize=(2 + 2 * len(windows), 6))
-    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(STANDARD_FIG_WIDTH_IN, STANDARD_FIG_HEIGHT_IN))
+    _apply_plot_style()
     for group in unique_groups:
         data = summary[summary['Group'] == group].sort_values('Window_Index')
         ax.errorbar(
             data['Window_Index'], data['mean'], yerr=data['error_value'],
-            label=group, marker='o', capsize=4, color=palette[group], linewidth=2,
+            label=group, marker='o', markersize=MARKER_SIZE, capsize=ERRORBAR_CAPSIZE,
+            color=palette[group], linewidth=LINE_WIDTH,
         )
     ax.set_xticks(range(len(windows)))
     ax.set_xticklabels(window_labels, rotation=30, ha='right')
     ax.set_xlabel('Developmental window')
     ax.set_ylabel(f"Growth rate ({metric_label}/day)")
-    ax.legend(frameon=False)
+    _place_legend(fig, ax=ax)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"{feature}_expansion_rate_by_window_{group_by}.png")
+    save_path = os.path.join(plot_dir, f"{feature}_expansion_rate_by_window_{group_by}.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")
@@ -3979,28 +3996,15 @@ def analyze_expansion_rate_by_window(
     window_indices = sorted(rate_df['Window_Index'].unique())
     n_cols, n_rows = _panel_grid_dims(len(window_indices))
     LEGEND_RESERVE_IN = 0.6
-    fig = plt.figure(figsize=(STANDARD_FIG_WIDTH_IN/3*n_cols, STANDARD_FIG_HEIGHT_IN * n_rows))
+    fig = plt.figure(figsize=_grid_panel_size_in(n_cols, n_rows))
     bottom_frac = LEGEND_RESERVE_IN / (STANDARD_FIG_HEIGHT_IN * n_rows + LEGEND_RESERVE_IN)
-    # hspace considerably larger than plot_feature_grid_scatters's equivalent
-    # gridspec -- this figure's panels show rotated category-name x-tick
-    # labels (grid_scatterplot's don't), which need real vertical room
-    # between one panel's labels and the next panel's title below them.
+
     gs = fig.add_gridspec(n_rows, n_cols, top=0.95, bottom=bottom_frac, hspace=0.15, wspace=0.3)
-    sns.set_style("whitegrid")
+    _apply_plot_style()
     axes = [fig.add_subplot(gs[i // n_cols, i % n_cols]) for i in range(len(window_indices))]
     for ax in axes[1:]:
         ax.sharey(axes[0])
 
-    # All window-panels share one y-axis (via sharey above), so the
-    # vertical spacing between stacked bracket rows must come from ONE
-    # shared reference rather than each panel's own y_max -- see the
-    # identical fix (and rationale) in plot_feature_grid_scatters above.
-    # Using the GLOBAL max across every window (rather than, say, the last
-    # window specifically) since the window with the fewest groups/
-    # narrowest range isn't necessarily the one whose bracket stack needs
-    # the least headroom -- windows nearer the end of a timecourse can
-    # have fewer surviving wells and thus a smaller max than an earlier,
-    # fuller window.
     global_max = rate_df['Growth_Rate_Per_Day'].max()
     shared_y_offset = abs(global_max) * 0.3 if global_max else None
 
@@ -4036,27 +4040,19 @@ def analyze_expansion_rate_by_window(
             x1, x2 = u_groups.index(g1), u_groups.index(g2)
             h = y_max + (s_idx * y_offset)
             ax.plot([x1, x1, x2, x2], [h, h + y_offset * 0.2, h + y_offset * 0.2, h], lw=0.5, color='black')
-            ax.text((x1 + x2) * 0.5, h + y_offset * 0.2, _stat_annotation_text(s), ha='center', va='bottom', fontsize=stats_fontsize)
+            ax.text((x1 + x2) * 0.5, h + y_offset * 0.2, _stat_annotation_text(s), ha='center', va='bottom', fontsize=STATS_FONTSIZE)
 
         if ax_idx % n_cols > 0:
             ax.set_ylabel("")
-            ax.spines['left'].set_visible(False)
             ax.tick_params(labelleft=False)
         else:
             ax.set_ylabel(f"Growth rate ({metric_label}/day)")
 
         ax.grid(True, alpha=0.3)
         ax.set_xlabel("")
-        # No visible x-tick labels -- the bottom legend already identifies
-        # each group by color, so long category names never need to be
-        # rendered (rotated or otherwise) at this figure's narrow per-panel
-        # width.
+
         ax.tick_params(labelbottom=False)
-        ax.set_title(_window_label(windows[w_idx]), fontsize=10)
-        ax.spines['bottom'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        ax.set_title(_window_label(windows[w_idx]), fontsize=GRID_TITLE_FONTSIZE)
 
         for group in u_groups:
             if group not in group_handles:
@@ -4066,10 +4062,9 @@ def analyze_expansion_rate_by_window(
                 )
 
     handles = [group_handles[k] for k in sorted(group_handles.keys())]
-    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.02),
-               ncol=min(len(handles), 2), frameon=False, title=None)
+    _place_legend(fig, handles=handles, ncol=min(len(handles), 3))
 
-    save_path = os.path.join(plot_dir, f"{feature}_expansion_rate_boxplots_by_window.png")
+    save_path = os.path.join(plot_dir, f"{feature}_expansion_rate_boxplots_by_window.{FILE_FORMAT}")
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved: {save_path}")

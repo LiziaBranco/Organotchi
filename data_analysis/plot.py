@@ -34,14 +34,12 @@ from utils_plot import *
 # Everything plot-specific (which features/metrics to plot, which grouping
 # variables to compare, which days to run statistical testing across
 # conditions on, outlier-detection settings, batches_complete_info) is
-# configured in plotting_metadata.json, not here -- see that file (and
-# plotting_metadata.json in data_analysis/ for a fully-commented template)
-# for what each key means.
+# configured in plotting_metadata.json.
 #
 # A project can keep more than one plotting_metadata*.json file for
 # distinct comparisons it wants analyzed separately (e.g.
-# 2026_04_30-Zeynep-CP's plotting_metadata_mtesr_vs_ctrl.json /
-# plotting_metadata_e10_vs_e11.json) -- discover_plotting_metadata_files
+# plotting_metadata_grouping1.json /
+# plotting_metadata_grouping2.json) -- discover_plotting_metadata_files
 # finds every one of them (skipping ad hoc "...copy..." backups) and the
 # driver loop below runs the full pipeline once per file, each writing
 # into its own plots_<suffix>/ directory via configure_plots_dirname so
@@ -102,27 +100,9 @@ def run_pipeline(plotting_metadata, run_label):
         std_multiplier=std_multiplier,
     )
 
-    # plot_feature_grid_scatters expects batches_complete_info as a
-    # {batch_id: {...}} dict (every other plotting function here expects the
-    # list form) -- a pre-existing inconsistency in utils_plot.py, not
-    # something introduced by the plotting_metadata.json split. The dict must
-    # carry every batch key (cell-line/condition/isogenic_pair/etc.), not just
-    # "days" -- plot_feature_grid_scatters resolves its groups via
-    # info.get(group_by, batch_id), so a dict missing the actual group_by key
-    # silently fell back to per-batch grouping for any group_by other than
-    # "batch" (confirmed via a real end-to-end run against PCH2_CB with
-    # group_by="condition": groups printed as "QB09_1"/"QB10_1" instead of
-    # "PCH"/"CTRL"). "days" itself is never read from this dict --
-    # plot_feature_grid_scatters iterates over its own `days` parameter instead.
-    plates_info_dict = {
-        batch["batch"]: batch
-        for batch in batches_complete_info
-    }
-
     # Feature correlation structure and per-well growth kinetics characterize
-    # the morphology feature space / the timecourse itself rather than a
-    # between-group comparison, so these run once per project instead of once
-    # per grouping variable in the loop below.
+    # the morphology feature space / the timecourse itself, so these run once
+    # per project instead of once per grouping variable in the loop below.
     plot_feature_correlation_heatmap(base_dir, project_dir, batches_complete_info, features, features_names)
 
     for growth_feature in growth_rate_features:
@@ -138,8 +118,7 @@ def run_pipeline(plotting_metadata, run_label):
     # UMAP+HDBSCAN clustering is unsupervised -- the embedding/clustering itself
     # doesn't depend on group_by, only the cluster-vs-group contingency table
     # does -- so, like the two analyses above, this runs once per project
-    # (using the first configured group for that table) rather than once per
-    # grouping variable in the loop below.
+    # (using the first configured group for that table).
     plot_umap_clusters(
         base_dir, project_dir, days=pca_umap_days, batches_complete_info=batches_complete_info,
         group_by=groups[0] if groups else "batch", segregation_groups=groups,
@@ -149,13 +128,17 @@ def run_pipeline(plotting_metadata, run_label):
     )
 
     # Well-level dataset + outlier-exclusion audit -- project-wide (not tied
-    # to any one grouping variable), so these run once here rather than
-    # once per group in the loop below.
+    # to any one grouping variable), so these run once per project.
     export_well_level_summary(base_dir, project_dir, batches_complete_info, features)
     audit_outlier_exclusion_by_well(
         base_dir, project_dir, batches_complete_info, features,
         group_by=groups[0] if groups else "batch",
     )
+
+    # Opt-in ground-truth QC: only runs for batch/days where segmentation_metadata.json's
+    # "expected_organoid_counts" was set -- a no-op print-and-return for every project
+    # that hasn't configured it.
+    check_expected_organoid_counts(base_dir, project_dir, batches_info)
 
     for group in groups:
         for aggregation_level in plot_aggregation_levels:
@@ -177,7 +160,7 @@ def run_pipeline(plotting_metadata, run_label):
         )
 
         plot_feature_grid_scatters(
-            base_dir, project_dir, days=days, batches_complete_info=plates_info_dict,
+            base_dir, project_dir, days=days, batches_complete_info=batches_complete_info,
             features=features, metric_names=features_names, group_by=group,
             min_wells_for_stats=min_wells_for_stats,
         )
@@ -270,7 +253,9 @@ for suffix, path in discover_plotting_metadata_files(project_dir):
     variant_metadata = load_plotting_metadata_file(path)
     plots_dirname = f"plots_{suffix}" if suffix else "plots"
     configure_plots_dirname(plots_dirname)
+    configure_plot_style(variant_metadata)
     run_label = f"{os.path.basename(path)} -> {plots_dirname}/"
     print(f"\n{'=' * 70}\n▶ Running plotting pipeline using {run_label}\n{'=' * 70}\n")
     run_pipeline(variant_metadata, run_label)
     configure_plots_dirname(None)
+    configure_plot_style(None)

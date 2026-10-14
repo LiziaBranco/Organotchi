@@ -1,20 +1,20 @@
 """
 Shared OrgLine (detector-guided SAM2 prompting) model-loading bridge.
 
-Centralizes three real bugs in the upstream OrgLine repo
+Centralizes three bugs in the upstream OrgLine repo
 (https://github.com/ucas-dx/OrgLine, as cloned 2026-07-28), all left
 undocumented in OrgLine's own README, that every caller of OrgLine in this
 codebase needs worked around identically:
 
 1. `orgdet_tiny.pt`'s detection head was trained with nc=18 (18 output
    classes), not nc=1 as every shipped config file (`orgline_tiny*.yaml`,
-   `data/*.yaml`) declares. Confirmed directly: loading the checkpoint into
+   `data/*.yaml`) declares. Test: loading the checkpoint into
    an nc=1 model produced 0 missing/0 unexpected *names* but a hard shape
    mismatch on every `model.24.cv3.*.weight` (18 vs 1 output channels);
    setting nc=18 in a local config copy loads with an exact 787/787 match.
    We don't know what the 18 classes correspond to (probably a fine-grained
-   scheme from OrgLine's own multi-tissue training set) and don't need to --
-   every detection is treated as "an organoid" here regardless of class id.
+   scheme from OrgLine's own multi-tissue training set), but every detection
+   is treated as "an organoid" here regardless of class id.
 2. `orgdet_tiny.pt` was also trained with the PANet-style head in
    `orgline_tiny_pan.yaml`, not the plainer `orgline_tiny.yaml` the README's
    "Low-VRAM" bullet names -- same evidence (shape/name match) confirms it.
@@ -37,31 +37,7 @@ Used by every OrgLine consumer of this tool:
 - `run_orgline_segmentation` in `utils_segmentation.py` (this folder), the
   `"orgline"` method available directly from `segmentation.py`.
 - `Organotchi-manuscript/benchmarking/adapters/predict_orgline.py`, the
-  tool-comparison benchmark (which validated OrgLine across
-  Brain/Intestine/Colon/PDAC -- see that repo's `benchmarking/README.md` --
-  before it was adopted here as a supported segmentation method). That's a
-  separate repository now (`pip install -e /path/to/Organotchi` gives it
-  `from data_analysis.orgline_bridge import build_detector, ...`), not a
-  same-repo sibling.
-
-These two used to each carry their own independent copy of this logic (a
-real reimplementation, subtly out of sync with the original); consolidated
-here so a future upstream-bug fix only needs to happen once, and so nothing
-depends on `Organotchi-manuscript/benchmarking/` -- tool-comparison/
-manuscript infrastructure, not something a plain Organotchi install is
-guaranteed to have -- for OrgLine support. (A third, standalone consumer --
-`data-analysis-orgline/`, which ran OrgLine's own morphology analysis via
-`orgline.utilseg` instead of this pipeline's own `utils_morphology.py` --
-was removed; the `"orgline"` method here is the only supported way to
-segment with OrgLine now.)
-
-Requires OrgLine's own environment (torch, the vendored Ultralytics-style
-detector, SAM2) to be importable -- see `../environments/README.md` for how
-that venv and the OrgLine repo clone + checkpoints are set up. That's this
-tool's own copy (`../environments/OrgLine`, `_DEFAULT_ORGLINE_REPO` in
-`experiment_info.py`) -- moved here from
-`Organotchi-manuscript/benchmarking/environments/` when that repo split
-off, since OrgLine support is a tool capability, not benchmark-specific.
+  tool-comparison benchmark.
 """
 
 import os
@@ -104,6 +80,7 @@ def build_detector(orgline_repo, orgdet_checkpoint, sam2_checkpoint, device="cpu
     temp_model = merger.safe_load_weights_to_model(model, complete_state)
     model.model = temp_model
     model.model.eval()  # NOT model.eval() -- see module docstring, bug #3
+    model.model.to(device)
     return model
 
 

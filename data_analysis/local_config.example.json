@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this file to local_config.json (gitignored) and fill in your own lab's values. experiment_info.py and fit_experiment_data.py fall back to this example file, with a warning, if local_config.json doesn't exist yet.",
+  "available_project_dirs": [
+    "example_project/example_batch"
+  ],
+  "checkpoint": "/absolute/path/to/your/segformer_based/best_segmentation_checkpoint.pth",
+  "base_dir": "../../../path/to/folder/raw_data_from_imaging_experiments_is_saved"
+}

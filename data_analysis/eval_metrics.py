@@ -2,35 +2,17 @@
 Shared metrics for comparing instance-labeled segmentation masks (0 =
 background, each object a distinct positive integer) against ground truth.
 
-Two families of metric are reported, deliberately, because not every tool
-this repository segments with is instance-aware:
+Two families of metric are reported:
 
-1. Instance-matching metrics (AP50 / AP75 / mAP, F1, precision, recall) --
-   fair between tools (e.g. Cellpose, StarDist, OrgLine) that natively
-   separate touching/overlapping organoids into distinct instances.
+1. Instance-matching metrics (AP50 / AP75 / mAP, F1, precision, recall)
 2. Pixel-level metrics (Dice, IoU, accuracy on the binarized organoid/
-   background mask) -- fair for our own SegFormer model too, which is
-   semantic-only; its "instances" for metric #1 are just connected
-   components of the binary mask and will under-count touching organoids
-   as a structural disadvantage, not a measure of mask quality.
+   background mask)
 
 The "AP" here follows the convention used in the Cellpose (Stringer et al.
 2021) and StarDist (Schmidt et al. 2018) papers and the 2018 Kaggle Data
 Science Bowl nucleus-segmentation challenge: AP_t = TP / (TP + FP + FN) at a
-one-to-one greedy IoU match with threshold t. This is NOT the COCO
-precision-recall-curve AP (that needs per-instance confidence scores, which
-several tools/output formats don't expose uniformly) -- it's the simpler,
-score-free matching accuracy that's the de facto standard metric in exactly
-this sub-field. Naming it "AP" here is for consistency with that literature,
-not COCO.
+one-to-one greedy IoU match with threshold t.
 
-Used, as an installed package (`from data_analysis.eval_metrics import ...`),
-by the separate `Organotchi-manuscript` repo's `train_and_test/checkpoint_predictions.py`'s
-`evaluate_image`, `train_and_test/tune_classical_filter.py`'s
-`pixel_metrics`, and `benchmarking/eval_metrics.py` (which adds
-`aggregate_image_results` -- the benchmark-reporting summary stat (mean/
-median/IQR across a whole tissue) that has no reason to live on the tool
-side, since nothing outside that repo's `benchmarking/` needs it).
 """
 
 import numpy as np
@@ -44,17 +26,7 @@ def _instance_ids(mask):
 def compute_iou_matrix(pred_mask, gt_mask):
     """IoU matrix, shape (n_pred, n_gt), between every pred instance and every
     GT instance (both instance-labeled arrays, 0=background).
-
-    Vectorized via a joint (pred_id, gt_id) pixel histogram rather than a
-    per-pair mask-and/mask-or loop -- the naive O(n_pred * n_gt) loop, each
-    iteration doing a full-image boolean op, is fine for Brain (~1
-    instance/image) but becomes minutes-to-hung on PDAC (500+ instances/image
-    -> 250,000+ full-image passes per image). This does one O(H*W) pass
-    regardless of instance count."""
-    # Some ground truth (e.g. Brain, one-organoid-per-image, saved straight from
-    # Zenodo's own .npy) is a plain bool array rather than an int label map.
-    # Cast up front so `bool` labels don't get treated as a boolean *index*
-    # later (numpy's fancy indexing overloads bool arrays as masks, not values).
+    """
     if pred_mask.dtype == bool:
         pred_mask = pred_mask.astype(np.int64)
     if gt_mask.dtype == bool:

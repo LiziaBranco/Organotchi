@@ -37,6 +37,26 @@
       "batch_no_plate": "BATCH_TREATMENT_A"
     }
   ],
+  "fig_width_in": 5,
+  "fig_height_in": 3,
+  "max_panel_cols": 3,
+  "color_palette": "husl",
+  "file_format": "png",
+  "legend_position": "below",
+  "legend_reserve_in": 0.6,
+  "line_width": 1.5,
+  "marker_size": 4,
+  "errorbar_capsize": 4,
+  "title_fontsize": 12,
+  "axis_label_fontsize": 12,
+  "tick_label_fontsize": 10,
+  "legend_fontsize": 10,
+  "grid_title_fontsize": 10,
+  "stats_fontsize": 6,
+  "annotation_fontsize": 10,
+  "cluster_label_fontsize": 8,
+  "heatmap_annot_fontsize": 7,
+  "compact_tick_fontsize": 8,
   "features": [
     "Area_um2", "Diameter_um", "Perimeter_um",
     "Feret_Diameter_Max_um", "Aspect_Ratio", "Circularity",
@@ -49,13 +69,18 @@
   ],
   "groups": ["condition", "batch_no_plate"],
   "days_for_group_comparison": [10, 18, 24],
-  "plot_aggregation_levels": ["object"],
+  "pca_umap_days": [10, 18, 24],
+  "plot_aggregation_levels": ["object", "well"],
   "outlier_detection": {
     "method": "iqr",
     "iqr_multiplier": 1.5,
     "std_multiplier": 3.0,
     "manual_std_thresholds": null,
     "aggregation_level": "object"
+  },
+  "min_wells_for_stats": 3,
+  "transition_days": {
+    "16.5": "Switched from 96-well single-organoid to 24-well multi-organoid plating"
   },
   "well_metric_plots": [
     {
@@ -64,9 +89,35 @@
       "csv_filename": "well_metrics_summary.csv"
     },
     {
-      "metric_column": "Cystic_Ratio",
-      "metric_label": "Cystic / non-cystic area ratio",
-      "csv_filename": "cystic_area_metrics.csv"
+      "metric_column": "Light_Dark_Ratio",
+      "metric_label": "Light / dark area ratio",
+      "csv_filename": "light_dark_metrics.csv"
     }
-  ]
+  ],
+  "line_plot_error_bar": "sem",
+  "pca_correlation_threshold": 0.9,
+  "growth_rate_features": [
+    {"feature": "Area_um2", "metric_label": "Area (um²)"},
+    {"feature": "Diameter_um", "metric_label": "Diameter (um)"}
+  ],
+  "developmental_windows": [
+    [1, 2, 4, 7],
+    [10, 14, 16.5, 18],
+    [21, 24, 28, 30]
+  ],
+  "window_instant_metrics": [
+    {
+      "feature": "Light_Fraction",
+      "metric_label": "Light fraction",
+      "csv_filename": "light_dark_metrics.csv"
+    }
+  ],
+  "window_expansion_rate_features": [
+    {"feature": "Area_um2", "metric_label": "Area (um^2)"}
+  ],
+  "umap_min_cluster_size": 5,
+  "umap_cluster_selection_method": "eom",
+  "umap_n_neighbors": 15,
+  "umap_min_dist": 0.1,
+  "umap_random_state": 42
 }

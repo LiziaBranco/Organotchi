@@ -1,14 +1,18 @@
 {
   "project_info": {
     "project_name": "template_multi_batch_organoid_analysis",
-    "description": "Template metadata for segmentation across multiple batches, conditions, imaging methods, and organoid-per-image modes. Grouping/plotting configuration lives in plotting_metadata.json, not here.",
+    "description": "Template metadata demonstrating every segmentation_metadata.json parameter across all three segmentation methods. Batch 1 shows 'dl' (Segformer-based) and 'cl' (classical) runs; batch 2 shows 'orgline' only, so every method is represented.",
     "raw_data_layout": "raw_data/Day <day>/<batch>/Tile*.tif or Tile*.jpg",
-    "processed_data_layout": "processed_data/Day <day>/<batch>/"
+    "processed_data_layout": "processed_data/Day <day>/<batch>/",
+    "_comment": "Within one batch, every run's 'days' list must be disjoint from every other run's -- segmentation output is written to processed_data/Day <day>/<batch>/ (see utils_segmentation.py), keyed by day and batch (never by run name). 'expected_organoid_counts' can be set both on a batch (a default, e.g. for a day with no run-specific override) and on an individual run (overrides the batch's value for that same day, else adds a day the batch-level dict didn't cover)."
   },
   "batches_info": [
     {
       "batch": "BATCH_CTRL_1",
       "num_plates": 2,
+      "expected_organoid_counts": {
+        "1": 96
+      },
       "segmentation_runs": [
         {
           "name": "early_96well_dl",
@@ -19,106 +23,58 @@
           "images_per_plate": 96,
           "organoids_per_image": "single",
           "pixel_to_micron_key": "4x",
-          "filter_masks": true
+          "pixel_to_micron": null,
+          "checkpoint": null,
+          "model_config_path": null,
+          "device": "cpu",
+          "filter_masks": true,
+          "crop_days": ["1"],
+          "min_area": 10000,
+          "max_area": null,
+          "min_circularity": 0.1,
+          "erosion_kernel_size": [0, 0],
+          "dilation_initial_kernel_size": [0, 0],
+          "dilation_iterations": 0,
+          "dilation_reduction_factor": 0.8,
+          "max_objects_before_circularity_pick": 1,
+          "track_light_dark_split": false,
+          "_comment": "'dl' (Segformer-based deep-learning segmentation; aliases: 'model'/'segmentation_model' keys, 'deep_learning'/'deeplearning'/'neural'/'nn' values). 'num_plates' is omitted here, so this run inherits the batch's own value (2) -- see the late run below for the override case. checkpoint/model_config_path left null to fall back to experiment_info.py's own defaults -- set them to override the model/checkpoint used for this run specifically. erosion/dilation kernels are 0 (disabled) by default."
         },
         {
-          "name": "late_24well_classical_single",
+          "name": "late_24well_classical_multi",
           "method": "cl",
           "days": [16.5, 18, 21, 24, 28, 30],
-          "tile_grid": "2x2",
-          "magnification": "1.25x",
-          "tile_order": "column_snake",
-          "images_per_plate": 24,
-          "stitched_images_per_batch": 24,
-          "organoids_per_image": "single",
-          "pixel_to_micron_key": "1.25x",
-          "threshold": 128,
-          "min_area": 30000,
-          "max_area": 3000000,
-          "min_circularity": 0.2
-        }
-      ]
-    },
-    {
-      "batch": "BATCH_CTRL_2",
-      "num_plates": 2,
-      "segmentation_runs": [
-        {
-          "name": "multi_organoid_24well_classical",
-          "method": "cl",
-          "days": [7, 10, 14, 18, 21],
           "tile_grid": "5x5",
           "magnification": "1.25x",
-          "tile_order": "column_snake",
+          "tile_order": "row_major",
+          "overlap_x": 32,
+          "overlap_y": 31,
           "images_per_plate": 24,
           "stitched_images_per_batch": 24,
+          "stitch": true,
+          "num_plates": 1,
           "organoids_per_image": "multiple",
-          "pixel_to_micron_key": "1.25x",
-          "threshold": 128,
+          "pixel_to_micron_key": "24_well",
+          "device": "cpu",
+          "threshold": "otsu",
+          "foreground_polarity": "dark",
           "min_area": 30000,
           "max_area": 3000000,
-          "min_circularity": 0.2
+          "min_circularity": 0.2,
+          "center_fraction": 0.95,
+          "close_kernel_size": 15,
+          "track_light_dark_split": true,
+          "light_dark_min_eta_squared": 0.3,
+          "light_dark_overlay_color": [255, 0, 255],
+          "expected_organoid_counts": {
+            "18": 24
+          },
+          "_comment": "'cl' (classical threshold+contour segmentation; aliases: 'classical'/'classic'/'threshold'/'traditional'). 'num_plates': 1 overrides the batch's default of 2 -- only one of the two plates from the early run above continued to this later timepoint. organoids_per_image: 'multiple' (aliases: 'organoid_mode'/'multiple_organoids' keys; accepts 'multi'/'many'/'true'/'yes') keeps every contour surviving the filters per stitched image, for multi-organoid wells. tile_order accepts 'serpentine'/'snake'/'d_order' (default), 'row'/'row_major' (shown here), 'column'/'column_major', or 'column_snake'/'vertical_snake'. threshold accepts an int 0-255 or the literal string 'otsu' to resolve a fresh Otsu cutoff per image. center_fraction/close_kernel_size are classical-only: center_fraction masks out everything beyond this fraction of the image width (approximating the physical well edge); close_kernel_size bridges small gaps in an object's boundary via morphological closing before area/circularity filtering. track_light_dark_split (aliases: 'track_core_rim_split'/'has_cystic_organoids'/'cystic_organoids') enables per-organoid light-vs-dark area estimation from each mask's own grayscale histogram -- light_dark_min_eta_squared is the minimum variance-explained fraction for that split to be trusted instead of treated as an artifact; light_dark_overlay_color is the RGB color used for the light class in the rendered classification overlay images (dark is always white, background always black)."
         }
       ]
     },
     {
       "batch": "BATCH_TREATMENT_A_1",
-      "num_plates": 2,
-      "segmentation_runs": [
-        {
-          "name": "early_96well_dl",
-          "method": "dl",
-          "days": [1, 2, 4, 7, 10, 14],
-          "tile_grid": "1x1",
-          "magnification": "4x",
-          "images_per_plate": 96,
-          "organoids_per_image": "single",
-          "pixel_to_micron_key": "4x",
-          "filter_masks": true
-        },
-        {
-          "name": "multi_organoid_24well_classical",
-          "method": "cl",
-          "days": [16.5, 18, 21, 24, 28, 30],
-          "tile_grid": "5x5",
-          "magnification": "1.25x",
-          "tile_order": "column_snake",
-          "images_per_plate": 24,
-          "stitched_images_per_batch": 24,
-          "organoids_per_image": "multiple",
-          "pixel_to_micron_key": "1.25x",
-          "threshold": 128,
-          "min_area": 30000,
-          "max_area": 3000000,
-          "min_circularity": 0.2
-        }
-      ]
-    },
-    {
-      "batch": "BATCH_TREATMENT_A_2",
-      "num_plates": 2,
-      "segmentation_runs": [
-        {
-          "name": "multi_organoid_24well_classical_cystic",
-          "method": "cl",
-          "days": [7, 10, 14, 18, 21, 24],
-          "tile_grid": "5x5",
-          "magnification": "1.25x",
-          "tile_order": "column_snake",
-          "images_per_plate": 24,
-          "stitched_images_per_batch": 24,
-          "organoids_per_image": "multiple",
-          "pixel_to_micron_key": "1.25x",
-          "threshold": 128,
-          "min_area": 30000,
-          "max_area": 3000000,
-          "min_circularity": 0.2,
-          "has_cystic_organoids": true
-        }
-      ]
-    },
-    {
-      "batch": "BATCH_TREATMENT_B_1",
       "num_plates": 2,
       "segmentation_runs": [
         {
@@ -130,9 +86,32 @@
           "images_per_plate": 96,
           "organoids_per_image": "single",
           "pixel_to_micron_key": "4x",
-          "_comment": "OrgLine (detector-guided SAM2 prompting) as an alternative to 'dl'/'cl' -- the same tiny-checkpoint configuration benchmarked in ../benchmarking, where it was the strongest tool across every tissue tried. Must be run with the orgline_venv interpreter (../benchmarking/environments/README.md), separately from 'dl'/'cl' runs which use the main environment. orgline_repo/orgdet_checkpoint/sam2_checkpoint default to the same local clone/checkpoints benchmarking/ already uses -- only set them if your clone lives elsewhere. organoids_per_image: 'single' keeps only OrgLine's single highest-confidence detection per image; 'multiple' keeps every detection surviving orgline_conf/orgline_iou, for genuinely multi-organoid wells (e.g. a 5x5-stitched well like the classical runs above).",
+          "device": "cpu",
+          "orgline_repo": null,
+          "orgdet_checkpoint": null,
+          "sam2_checkpoint": null,
           "orgline_conf": 0.2,
-          "orgline_iou": 0.7
+          "orgline_iou": 0.7,
+          "orgline_imgsz": 640,
+          "orgline_agnostic_nms": false,
+          "_comment": "OrgLine (detector-guided SAM2 prompting; aliases: 'model'/'segmentation_model' keys, 'org_line'/'orgdet'/'orgline_tiny' values), an alternative to 'dl'/'cl'. Runs under this tool's own main environment, same as 'dl'/'cl' -- no separate venv or switching needed (see ../../environments/README.md). orgline_repo/orgdet_checkpoint/sam2_checkpoint left null here to default to ../../environments/OrgLine's own clone/checkpoints -- set them only if your clone lives elsewhere. organoids_per_image: 'single' keeps only OrgLine's single highest-confidence detection per image; 'multiple' keeps every detection surviving orgline_conf/orgline_iou -- see the late run below for a multi-organoid, stitched example."
+        },
+        {
+          "name": "late_24well_orgline_multi",
+          "method": "orgline",
+          "days": [16.5, 18, 21, 24, 28, 30],
+          "tile_grid": "5x5",
+          "magnification": "1.25x",
+          "tile_order": "row_major",
+          "overlap_x": 32,
+          "overlap_y": 31,
+          "images_per_plate": 24,
+          "stitched_images_per_batch": 24,
+          "organoids_per_image": "multiple",
+          "pixel_to_micron_key": "24_well",
+          "orgline_conf": 0.25,
+          "orgline_iou": 0.6,
+          "_comment": "Orgline_conf/orgline_iou are the detector's confidence/NMS-IoU thresholds, tuned slightly looser here than the early run's defaults for the more crowded multi-organoid case; orgline_imgsz/orgline_agnostic_nms are omitted, so they keep their defaults (640, false) -- see the early run's own comment for what those mean."
         }
       ]
     }

@@ -1,25 +1,6 @@
 import argparse
 import os
-import sys
-import subprocess
 
-# Set before any torch/numpy/MKL-linked import happens (including
-# transitively, via utils_segmentation.py below) -- on a many-core machine,
-# these libraries default to spawning one thread per core for every
-# individual op, and the resulting thread-creation/scheduling overhead can
-# dwarf the actual compute for a single-image forward pass. Measured
-# directly for this exact class of problem in the Organotchi-manuscript
-# repo's benchmarking/environments/README.md ("CPU thread oversubscription"):
-# a single Cellpose call on this machine dropped from 4m40s+ (sys time alone
-# >3m28s) to a few seconds once these were set to 4. OrgLine (also
-# torch-based) was never given this fix when the "orgline" segmentation
-# method was integrated here, and a real production run showed exactly the
-# same symptom (~17s/image, most of it in the detector/SAM2 forward passes,
-# not the actual image content). setdefault so an operator's own explicit
-# setting is never overridden. Inherited automatically by both the
-# subprocess- and execv-based venv switches below (os.environ is passed
-# through by default in each case), so this covers every OrgLine invocation
-# path, not just a direct one.
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 
@@ -33,11 +14,8 @@ def _parse_args():
         default=None,
         help=(
             "Comma-separated segmentation methods to process this invocation (e.g. "
-            "'orgline' or 'dl,cl'), skipping every other configured run. Mainly set "
-            "automatically when this script re-invokes itself under OrgLine's venv "
-            "for a project mixing 'orgline' with 'dl'/'cl' runs (see the top-level "
-            "venv-switch logic below) -- pass it yourself only if you want to split "
-            "the work across separate invocations by hand."
+            "'orgline' or 'dl,cl'), skipping every other configured run -- pass this if "
+            "you want to split the work across separate invocations by hand."
         ),
     )
     mode_group = parser.add_mutually_exclusive_group()
@@ -71,6 +49,19 @@ def _parse_args():
         const="check",
         help="Report which day/batch/run segmentation outputs already exist, are missing, or are stale, without running anything.",
     )
+    mode_group.add_argument(
+        "--correct_mask",
+        dest="mode",
+        action="store_const",
+        const="correct_mask",
+        help=(
+            "Interactively pick a day, then a batch, then a tile whose mask isn't quite "
+            "right, open it in napari for manual correction, then re-extract morphology "
+            "metrics for that one batch/day once the window is closed. Needs napari plus "
+            "a Qt backend and a real display -- see utils_segmentation.py's "
+            "open_mask_correction_viewer."
+        ),
+    )
     parser.set_defaults(mode="resume")
     return parser.parse_args()
 
@@ -80,19 +71,17 @@ ARGS.only_methods = (
     {m.strip() for m in ARGS.only_methods.split(",") if m.strip()} if ARGS.only_methods else None
 )
 
-# Methods delegated to a child process this invocation (see the venv-switch
-# logic near the bottom of this file) -- excluded from this process's own
-# dispatch loops so the same work isn't done twice.
-DELEGATED_METHODS = set()
-
 from experiment_info import *
 from utils_segmentation import (
     apply_filtering_to_segmentations,
     generate_classical_segmentation_comparison_figures,
+    list_correctable_tiles,
+    open_mask_correction_viewer,
     prepare_classical_segmentation_images,
     run_classical_brightfield_segmentation,
     run_deep_learning_segmentation,
     run_orgline_segmentation,
+    save_corrected_mask,
 )
 
 RAW_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff"}
@@ -483,18 +472,20 @@ def _run_orgline_pipeline(batch_name, run):
             sam2_checkpoint=run.get("sam2_checkpoint"),
             conf=run.get("orgline_conf", 0.2),
             iou=run.get("orgline_iou", 0.7),
+            imgsz=run.get("orgline_imgsz", 640),
+            agnostic_nms=run.get("orgline_agnostic_nms", False),
             organoid_mode=run["organoid_mode"],
             images_per_plate=run.get("images_per_plate", run.get("stitched_images_per_batch", 24)),
             device=run.get("device", "cpu"),
             run_name=run["name"],
         )
 
-    # Optional, same post-inference area/circularity filter DL mode uses (off
-    # by default here is NOT the case -- filter_masks defaults to True the
-    # same way it does for dl; set it explicitly false per-run if it doesn't
-    # suit that run). NOTE: max_objects_before_circularity_pick defaults to 1
-    # (keep only the single most circular survivor), which is only correct
-    # for organoid_mode "single" -- a "multiple" run relying on the default
+    # Optional, same post-inference area/circularity filter DL mode uses:
+    # filter_masks defaults to True the same way it does for dl, so set it
+    # explicitly false per-run when it doesn't suit that run.
+    # max_objects_before_circularity_pick defaults to 1 (keep only the single
+    # most circular survivor), which is only correct for
+    # organoid_mode "single" -- a "multiple" run relying on the default
     # would silently collapse every image down to one kept structure. Set
     # max_objects_before_circularity_pick explicitly (e.g. a large number) or
     # filter_masks: false for "multiple" orgline runs that want every
@@ -527,10 +518,110 @@ def _run_orgline_pipeline(batch_name, run):
     )
 
 
+def _run_mask_correction():
+    """Interactively pick a day, then a batch, then a tile, open its mask in
+    napari for manual correction, and re-extract morphology metrics for
+    that one batch/day once the window is closed.
+    """
+    import questionary
+
+    all_days = sorted({
+        day
+        for batch in batches_info
+        for run in get_segmentation_runs(batch)
+        for day in run["days"]
+    })
+    if not all_days:
+        print("No days configured for this project.")
+        return
+
+    day_str = questionary.select(
+        "Select a day to correct a mask for:",
+        choices=[str(day) for day in all_days],
+    ).ask()
+    if day_str is None:
+        return
+    day = next(day for day in all_days if str(day) == day_str)
+
+    candidate_batches = sorted({
+        batch["batch"]
+        for batch in batches_info
+        for run in get_segmentation_runs(batch)
+        if day in run["days"]
+    })
+    available_batches = [
+        batch_name for batch_name in candidate_batches
+        if list_correctable_tiles(base_dir, project_dir, day, batch_name)
+    ]
+    if not available_batches:
+        print(f"No segmented masks found for Day {day} yet -- run segmentation.py first.")
+        return
+
+    batch_name = questionary.select(
+        f"Select a batch (Day {day}):", choices=available_batches,
+    ).ask()
+    if batch_name is None:
+        return
+
+    tiles = list_correctable_tiles(base_dir, project_dir, day, batch_name)
+    tile_name = questionary.select(
+        f"Select a tile to correct ({batch_name}, Day {day}):", choices=tiles,
+    ).ask()
+    if tile_name is None:
+        return
+
+    edited_labels, masks_dir, tile_name = open_mask_correction_viewer(
+        base_dir, project_dir, day, batch_name, tile_name,
+    )
+    save_corrected_mask(base_dir, project_dir, day, batch_name, tile_name, masks_dir, edited_labels)
+
+    # Deliberate exception to this script's usual separation from morphology
+    # extraction -- see this function's own docstring.
+    from utils_morphology import (
+        extract_light_dark_metrics,
+        extract_organoid_morphology_metrics,
+        generate_light_dark_overlay_masks,
+    )
+
+    matching_runs = [
+        run for batch in batches_info if batch["batch"] == batch_name
+        for run in get_segmentation_runs(batch) if day in run["days"]
+    ]
+    if not matching_runs:
+        print(f"⚠️  No configured run covers {batch_name}, Day {day} -- skipping metrics re-extraction.")
+        return
+    run = matching_runs[0]
+    pixel_size = get_pixel_to_micron_for_run(run)
+    images_per_plate = run.get("images_per_plate", run.get("stitched_images_per_batch", 24))
+
+    print(f"\nRe-extracting morphology metrics for {batch_name}, Day {day} ...")
+    extract_organoid_morphology_metrics(
+        base_dir, project_dir, [day], [batch_name], pixel_size["x"], pixel_size["y"],
+        organoid_mode=run["organoid_mode"], run_name=run["name"],
+        images_per_plate=images_per_plate, force=True,
+    )
+    if run.get("track_light_dark_split", False):
+        extract_light_dark_metrics(
+            base_dir, project_dir, [day], [batch_name], pixel_size["x"], pixel_size["y"],
+            organoid_mode=run["organoid_mode"],
+            foreground_polarity=run.get("foreground_polarity", "dark"),
+            min_eta_squared=run.get("light_dark_min_eta_squared", 0.3),
+            images_per_plate=images_per_plate, run_name=run["name"], force=True,
+        )
+        generate_light_dark_overlay_masks(
+            base_dir, project_dir, [day], [batch_name],
+            foreground_polarity=run.get("foreground_polarity", "dark"),
+            min_eta_squared=run.get("light_dark_min_eta_squared", 0.3),
+            light_color=run.get("light_dark_overlay_color", (255, 0, 255)),
+            force=True,
+        )
+    print("Done -- morphology metrics now reflect the corrected mask.")
+
+
 def _print_check_report():
     """Report segmentation output status per day/batch/run without running
     anything. Run morphology.py --check for the corresponding metrics
-    status -- that's a separate stage now, with its own check mode."""
+    status."""
     total = 0
     segmentation_complete = 0
 
@@ -554,147 +645,24 @@ def _print_check_report():
 
 def _run_selected(run):
     """Whether ``run`` should be processed by *this* process's own dispatch
-    loops -- respects an explicit --only-methods filter, and excludes
-    whatever's already been delegated to a child process this invocation
-    (see the venv-switch logic below)."""
+    loops -- respects an explicit --only-methods filter."""
     if ARGS.only_methods and run["method"] not in ARGS.only_methods:
-        return False
-    if run["method"] in DELEGATED_METHODS:
         return False
     return True
 
 
-def _orgline_venv_python(orgline_repo):
-    """OrgLine's isolated venv interpreter, resolved as the sibling
-    orgline_venv/ next to orgline_repo's own environments/ folder (see
-    ../environments/README.md) -- not hardcoded, so a project
-    pointing orgline_repo somewhere else still resolves correctly."""
-    environments_dir = os.path.dirname(os.path.abspath(orgline_repo))
-    return os.path.join(environments_dir, "orgline_venv", "bin", "python")
-
-
-def _running_under(python_path):
-    """Whether the CURRENT process is running under the venv that
-    ``python_path`` (a venv's own bin/python) belongs to. Compares
-    ``sys.prefix`` (the venv's own root directory, as the interpreter itself
-    resolved it at startup) rather than resolving ``python_path``/
-    ``sys.executable`` as file paths -- venvs are typically created without
-    ``--copies``, so bin/python is a symlink to the same underlying system
-    interpreter for every venv; realpath-resolving it collapses every venv
-    on the machine to one identical path and can never distinguish them."""
-    venv_root = os.path.dirname(os.path.dirname(os.path.abspath(os.path.expanduser(python_path))))
-    return os.path.abspath(sys.prefix) == venv_root
-
-
-def _pending_methods():
-    """Which segmentation methods actually have day/batch/run work left this
-    invocation, via cheap filesystem-only completeness checks (no model
-    loading) -- used to decide whether OrgLine's isolated venv needs to be
-    engaged at all, and whether anything else also needs the current/native
-    environment."""
-    methods = set()
-    for batch in batches_info:
-        batch_name = batch["batch"]
-        for run in get_segmentation_runs(batch):
-            if not run["days"] or not _run_selected(run):
-                continue
-            if ARGS.mode == "force":
-                methods.add(run["method"])
-                continue
-            for day in run["days"]:
-                complete, _ = _run_day_complete(batch_name, run, day)
-                if not complete:
-                    methods.add(run["method"])
-                    break
-    return methods
-
-
-def _first_orgline_repo():
-    for batch in batches_info:
-        for run in get_segmentation_runs(batch):
-            if run["method"] == "orgline":
-                return run["orgline_repo"]
-    return None
-
-
-def _switch_to_orgline_venv_if_needed():
-    """If any 'orgline'-method run still has pending work, make sure it's
-    processed under OrgLine's own venv -- never the current one, since
-    OrgLine's dependencies (its own torch/torchvision pins, the vendored
-    detector, SAM2) are isolated from mmsegmentation's and generally aren't
-    importable from wherever this script happened to be launched.
-
-    - If OrgLine is the *only* thing pending, this process re-execs itself
-      into OrgLine's venv outright (os.execv fully replaces the process --
-      nothing of the previously active environment lingers).
-    - If something else (dl/cl, needing the current/native environment) is
-      *also* pending, OrgLine's share of the work is delegated to a child
-      process running under its venv instead (subprocess.run, with
-      --only-methods orgline) -- an isolated child process is itself the
-      "deactivation" of that venv the moment it exits, and this process's
-      own environment is never touched, so it can go on to handle the
-      dl/cl portion right after.
-    - If this process is already running under OrgLine's venv but dl/cl
-      work is ALSO pending, there's no reliable way to locate "the native
-      environment" to switch back to (unlike orgline_venv, nothing in this
-      project's config points to it) -- that portion is reported instead of
-      silently attempted or skipped.
-    """
-    if ARGS.mode not in ("resume", "force"):
-        return  # --check needs no model loading at all
-
-    pending = _pending_methods()
-    if "orgline" not in pending:
-        return
-
-    orgline_repo = _first_orgline_repo()
-    orgline_python = _orgline_venv_python(orgline_repo)
-
-    if _running_under(orgline_python):
-        other_pending = pending - {"orgline"}
-        if other_pending:
-            print(
-                f"⚠️  Running under OrgLine's venv, but {', '.join(sorted(other_pending))} "
-                "work is also pending and needs the native environment -- this "
-                "invocation only handles the OrgLine portion. Re-run from the native "
-                "environment for the rest."
-            )
-        return
-
-    other_pending = pending - {"orgline"}
-    child_argv = [orgline_python, os.path.abspath(__file__)] + sys.argv[1:] + ["--only-methods", "orgline"]
-
-    if not other_pending:
-        print(
-            f"🔀 Only OrgLine-method work is pending -- switching this process to its venv ({orgline_python}).",
-            flush=True,
-        )
-        os.execv(orgline_python, child_argv)
-        return  # unreachable -- execv replaces this process outright
-
-    print(
-        f"🔀 OrgLine-method work is pending alongside {', '.join(sorted(other_pending))} work -- "
-        f"delegating the OrgLine portion to its own venv ({orgline_python}); this process's own "
-        "environment stays active for the rest.",
-        flush=True,
-    )
-    result = subprocess.run(child_argv)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
-    DELEGATED_METHODS.add("orgline")
-
-
-_switch_to_orgline_venv_if_needed()
-
 if ARGS.mode == "check":
     print("🔍 Check mode: reporting output status without processing anything.")
     _print_check_report()
+elif ARGS.mode == "correct_mask":
+    print("🖌️  Mask-correction mode: pick a day/batch/tile to edit in napari.")
+    _run_mask_correction()
 elif ARGS.mode == "force":
     print("🔁 Force mode enabled: every configured day/batch/run will be fully recomputed.")
 else:
     print("⏯️  Resume mode (default): continuing from wherever the analysis stopped.")
 
-if ARGS.mode != "check":
+if ARGS.mode not in ("check", "correct_mask"):
     for batch in batches_info:
         batch_name = batch["batch"]
 
