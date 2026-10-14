@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+
+# Editable-install / build artifacts (`pip install -e .`).
+*.egg-info/
+build/
+dist/
+
+# OrgLine's own isolated venv + vendored clone (see environments/README.md)
+# -- multi-GB, regenerable, never meant to be committed. Same convention as
+# Organotchi-manuscript/benchmarking/environments/*_venv/ and vendored tool
+# clones there.
+environments/orgline_venv/
+environments/OrgLine/
+
+# Per-lab project directories/checkpoint/base_dir -- local_config.example.json
+# is the committed template; each clone keeps its own local_config.json.
+data_analysis/local_config.json
+
+# Kept locally for parameter-sweep work, not meant to ship in the public repo.
+data_analysis/fit_experiment_data.py
